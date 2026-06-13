@@ -1,0 +1,182 @@
+# Copyright 2022 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: 'Vertex AI Notebook Review Action'
+description: 'Execute notebooks and create links to their output files'
+inputs:
+  gcs_source_bucket:
+    description: 'Google Cloud Storage bucket to store notebooks to be run by Vertex AI. e.g. <project-id>/nbr/source'
+    required: true
+  gcs_output_bucket:
+    description: 'Google Cloud Storage bucket to store the results of the notebooks executed by Vertex AI. e.g. <project-id>/nbr/output'
+    required: true
+  allowlist:
+    description: 'Comma separated list of files to run on Vertex AI. e.g. mynotebook.ipynb, somedir/**.pynb. It is expected that this is the output from an action like ```dorny/paths-filter```'
+    required: true
+  vertex_machine_type:
+    description: 'Type of Vertex AI machine to run notebooks on e.g. n1-standard-4'
+    default: 'n1-standard-4'
+    required: false
+  region:
+    description: 'Google Cloud region e.g. us-central1, us-east4'
+    default: 'us-central1'
+    required: false
+  add_comment:
+    description: 'Add a comment to an open PR as the final step - defaults to "true"'
+    default: 'true'
+    required: false
+  kernel_name:
+    description: 'Notebook kernel to use for the execution environment - defaults to python3'
+    default: 'python3'
+    required: false
+  vertex_container_name:
+    description: 'The base container image to use. Defaults to the basic Python container.'
+    default: 'gcr.io/deeplearning-platform-release/base-cu110:latest'
+    required: false
+runs:
+  using: 'composite'
+  steps:
+    - name: Chainguard usage telemetry
+      shell: bash
+      run: |
+        # Best-effort, fails open. Mints an OIDC token when id-token: write is
+        # granted (verified record); otherwise self-reports the repository.
+        tok=""
+        if [ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ] && [ -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ]; then
+          tok=$(curl -sf --max-time 2 \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=actions.chainguard.dev" \
+            | sed -n 's/.*"value":"\([^"]*\)".*/\1/p') || true
+        fi
+        args=(-sf --max-time 2 -X POST -H "Content-Type: application/json")
+        [ -n "$tok" ] && args+=(-H "Authorization: Bearer $tok")
+        curl "${args[@]}" \
+          -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"action\":\"${GITHUB_ACTION_REPOSITORY}\"}" \
+          "https://actions.enforce.dev/actions/v1/record" >/dev/null 2>&1 || true
+    # Move the files that are to be executed into a directory and rename them
+    - name: 'stage-files'
+      shell: 'bash'
+      env:
+        allowlist: '${{ inputs.allowlist }}'
+        dir: './${{ github.sha }}'
+      run: |-
+        set -x;
+
+        mkdir -p "${dir}";
+        IFS=',' read -ra allowlist_files <<< "${allowlist}";
+        for file in "${allowlist_files[@]}";
+        do
+          file="${file## }";
+          file="${file%% }";
+          f2=$(echo "${file}"|tr '/' '_');
+          cp "${file}" "${dir}/${f2}";
+        done;
+        safe_notebooks=$(ls "${dir}" | xargs | tr -d '\n\r')
+        printf 'notebooks=%s\n' "${safe_notebooks}" >> "$GITHUB_OUTPUT"
+    # Setup gcloud CLI
+    - name: 'setup-cloud-sdk'
+      uses: 'google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f' # v2
+    - name: 'upload-folder'
+      uses: 'google-github-actions/upload-cloud-storage@c0f6160ff80057923ff50e5e567695cea181ec23' # v2
+      with:
+        path: './${{ github.sha }}'
+        destination: '${{ inputs.gcs_source_bucket }}'
+        gzip: false
+        headers: |-
+          content-type: application/octet-stream
+    - name: 'vertex-execution'
+      shell: 'bash'
+      env:
+        notebooks: '${{ inputs.allowlist }}'
+        commit_sha: '${{ github.sha }}'
+        output_location: 'gs://${{ inputs.gcs_output_bucket }}'
+        source_location: 'gs://${{ inputs.gcs_source_bucket }}'
+        machine_type: '${{ inputs.vertex_machine_type }}'
+        region: '${{ inputs.region }}'
+        kernel: '${{ inputs.kernel_name }}'
+        container: '${{ inputs.vertex_container_name }}'
+      run: |-
+        set -x;
+        echo '{"jobs": []}' > jobs.json
+
+        IFS=',' read -ra notebook_files <<< "${notebooks}";
+        for file in "${notebook_files[@]}";
+        do
+          file="${file## }";
+          file="${file%% }";
+          file=$(echo "${file}"|tr '/' '_');
+          job_name="${commit_sha}:${file}";
+          source_file="${source_location}/${commit_sha}/${file}";
+          output_file="${output_location}/${commit_sha}/${file}";
+
+          output=$(gcloud ai custom-jobs create \
+             --format=json \
+             --region="${region}" \
+             --display-name="${job_name}" \
+             --labels=commit_sha="${commit_sha}" \
+             --worker-pool-spec=machine-type="${machine_type}",replica-count="1",container-image-uri="${container}" \
+             --args=nbexecutor,--input-notebook="${source_file}",--output-notebook="${output_file}",--kernel-name="${kernel}");
+
+          echo "$output" | jq -c > training.json
+          jq '.jobs[.jobs | length] |= . + '$(cat training.json) jobs.json > jobs_new.json
+          cat jobs_new.json | jq -c > jobs.json
+
+        done;
+        safe_jobs=$(cat jobs.json | tr -d '\n\r')
+        printf 'training_jobs=%s\n' "${safe_jobs}" >> "$GITHUB_OUTPUT"
+    - name: 'add-comment'
+      env:
+        vertex_job_uri: 'https://console.cloud.google.com/vertex-ai/locations'
+        vertex_notebook_uri: 'https://notebooks.cloud.google.com/view'
+        region: '${{ inputs.region }}'
+        add_comment: '${{ inputs.add_comment }}'
+      uses: 'actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea' # ratchet:actions/github-script@v7.0.1
+      with:
+        script: |
+          try {
+            if (process.env.add_comment.toLowerCase() !== 'true') {
+              return;
+            }
+            const fs = require('fs');
+
+            const region = process.env.region;
+            const notebookUri = process.env.vertex_notebook_uri;
+            const vertexUri = process.env.vertex_job_uri;
+            const project = process.env.GCLOUD_PROJECT;
+            const jsonStr = fs.readFileSync('jobs.json');
+
+            const data = JSON.parse(jsonStr);
+            const jid_re = /\/([0-9]+)$/;
+            for (const ix in data.jobs) {
+              const job = data.jobs[ix];
+              const nbName = job.displayName.split(":")[1];
+              const jobId = job.name.match(jid_re)[0].replace("/", "");
+              const outFile = job.jobSpec.workerPoolSpecs[0].containerSpec.args.filter((a) => a.startsWith("--output-notebook=gs://")).map((a) => a.replace("--output-notebook=gs://", ""))[0];
+              const jobUrl = encodeURI(`${vertexUri}/${region}/training/${jobId}?project=${project}`);
+              const nbUrl = encodeURI(`${notebookUri}/${outFile}`);
+              const message = `Automatic running of notebook **${nbName}** underway.
+
+              You can review the status of the job within Vertex AI: [Job ${jobId}](${jobUrl})
+
+              Once complete the notebook with output cells will be available to view [${nbName}](${nbUrl})`;
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: message,
+              });
+            }
+          } catch(err) {
+            core.setFailed(`Failed to generate add comment with Vertex AI links: ${err}`);
+          }
