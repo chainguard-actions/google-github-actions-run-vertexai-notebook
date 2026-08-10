@@ -1,0 +1,53 @@
+name: Test stage-files with multiple notebooks
+# Tests that the stage-files step correctly handles multiple notebook files
+# in the allowlist, including files in subdirectories (path separators become underscores).
+on:
+  workflow_dispatch:
+
+jobs:
+  test-multiple-notebooks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Create dummy notebook files including one in a subdirectory
+      - name: Create test notebooks
+        run: |
+          mkdir -p notebooks/subdir
+          echo '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}' > notebooks/first.ipynb
+          echo '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}' > notebooks/subdir/second.ipynb
+
+      # Call the action under test; it will fail at setup-cloud-sdk (no GCP creds)
+      # but the stage-files step runs first and stages the files we can verify.
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          gcs_source_bucket: 'fake-project/nbr/source'
+          gcs_output_bucket: 'fake-project/nbr/output'
+          allowlist: 'notebooks/first.ipynb notebooks/subdir/second.ipynb'
+          add_comment: 'false'
+
+      - name: Assert first staged file exists
+        run: |
+          dir="./${{ github.sha }}"
+          expected_file="${dir}/notebooks_first.ipynb"
+          echo "Checking for staged file: $expected_file"
+          if [ ! -f "$expected_file" ]; then
+            echo "FAIL: expected staged file not found at $expected_file"
+            ls -la "$dir" || echo "Directory does not exist"
+            exit 1
+          fi
+          echo "PASS: first staged file found"
+
+      - name: Assert second staged file exists with path-to-underscore conversion
+        run: |
+          dir="./${{ github.sha }}"
+          expected_file="${dir}/notebooks_subdir_second.ipynb"
+          echo "Checking for staged file: $expected_file"
+          if [ ! -f "$expected_file" ]; then
+            echo "FAIL: expected staged file not found at $expected_file"
+            ls -la "$dir" || echo "Directory does not exist"
+            exit 1
+          fi
+          echo "PASS: second staged file found with correct name (slashes converted to underscores)"

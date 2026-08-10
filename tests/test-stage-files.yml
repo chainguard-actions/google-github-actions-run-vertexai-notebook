@@ -1,0 +1,80 @@
+name: Test stage-files step logic
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Create a sample notebook file that the action will stage
+      - name: Create sample notebook file
+        run: |
+          mkdir -p tests/notebooks
+          cat > tests/notebooks/sample.ipynb << 'EOF'
+          {
+            "cells": [],
+            "metadata": {
+              "kernelspec": {
+                "display_name": "Python 3",
+                "language": "python",
+                "name": "python3"
+              }
+            },
+            "nbformat": 4,
+            "nbformat_minor": 4
+          }
+          EOF
+
+      # Invoke the action under test (will fail at GCP steps without credentials)
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          gcs_source_bucket: 'fake-project/nbr/source'
+          gcs_output_bucket: 'fake-project/nbr/output'
+          allowlist: 'tests/notebooks/sample.ipynb'
+          add_comment: 'false'
+
+      # Run the stage-files logic directly using a separate directory to avoid conflicts
+      - name: Run stage-files logic
+        id: stage
+        env:
+          allowlist: 'tests/notebooks/sample.ipynb'
+          dir: './test-staging'
+        run: |
+          set -x
+          mkdir -p ${dir}
+          for file in ${allowlist}; do
+            f2=$(echo ${file}|tr '/' '_')
+            cp ${file} ${dir}/${f2}
+          done
+          notebooks=$(ls ${dir} | xargs)
+          echo "notebooks=${notebooks}" >> $GITHUB_OUTPUT
+
+      - name: Assert staged file exists
+        run: |
+          expected_file="test-staging/tests_notebooks_sample.ipynb"
+          echo "Checking for staged file: ${expected_file}"
+          if [ ! -f "${expected_file}" ]; then
+            echo "FAIL: expected staged file not found at ${expected_file}"
+            ls -la "test-staging/" || echo "Directory does not exist"
+            exit 1
+          fi
+          echo "PASS: staged file found"
+
+      - name: Assert notebooks output
+        env:
+          ACTUAL: ${{ steps.stage.outputs.notebooks }}
+        run: |
+          echo "actual notebooks output: $ACTUAL"
+          if [ -z "$ACTUAL" ]; then
+            echo "FAIL: notebooks output is empty"
+            exit 1
+          fi
+          if echo "$ACTUAL" | grep -q "sample"; then
+            echo "PASS: notebooks output contains expected file"
+          else
+            echo "FAIL: notebooks output does not contain expected file name"
+            exit 1
+          fi

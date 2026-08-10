@@ -1,0 +1,17 @@
+name: 'Release'
+
+on:
+  push:
+    branches:
+      - 'main'
+      - 'release/**/*'
+
+jobs:
+  release:
+    uses: 'google-github-actions/.github/.github/workflows/release.yml@29c6d38eeb974133b4b66401985f7c70cf4a6681' # v3
+    permissions:
+      attestations: 'write'
+      contents: 'write'
+      packages: 'write'
+    secrets:
+      ACTIONS_BOT_TOKEN: '${{ secrets.ACTIONS_BOT_TOKEN }}'
