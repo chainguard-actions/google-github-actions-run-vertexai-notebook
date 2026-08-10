@@ -9,6 +9,7 @@ Hardened by [Chainguard](https://www.chainguard.dev) from the upstream action at
 | Version | Tag | Upstream commit |
 |---------|-----|-----------------|
 | v1.1.2 | [`v1.1.2`](https://github.com/chainguard-actions/google-github-actions-run-vertexai-notebook/tree/v1.1.2) | [`acd78f7`](https://github.com/google-github-actions/run-vertexai-notebook/commit/acd78f75c1e27e147f3281dfaf3479f9e8da7d05) |
+| v1.1.3 | [`v1.1.3`](https://github.com/chainguard-actions/google-github-actions-run-vertexai-notebook/tree/v1.1.3) | [`9322561`](https://github.com/google-github-actions/run-vertexai-notebook/commit/9322561b61e4c720ac7868db5450409acdfb0131) |
 
 ## Privacy
 
