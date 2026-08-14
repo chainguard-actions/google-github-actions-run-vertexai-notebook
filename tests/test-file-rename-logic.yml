@@ -1,0 +1,73 @@
+name: Test file rename logic (slash to underscore)
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create nested notebook files
+        run: |
+          mkdir -p deep/nested/path
+          echo '{"cells": []}' > deep/nested/path/notebook.ipynb
+          mkdir -p another/dir
+          echo '{"cells": []}' > another/dir/test.ipynb
+          echo '{"cells": []}' > toplevel.ipynb
+
+      # The action will fail at setup-cloud-sdk (no GCP auth), but the
+      # stage-files step runs first and renames files (slash -> underscore).
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          gcs_source_bucket: fake-project/nbr/source
+          gcs_output_bucket: fake-project/nbr/output
+          allowlist: deep/nested/path/notebook.ipynb another/dir/test.ipynb toplevel.ipynb
+          add_comment: 'false'
+
+      - name: Assert deep nested path renamed correctly
+        run: |
+          sha="${GITHUB_SHA}"
+          expected="deep_nested_path_notebook.ipynb"
+          if [ ! -f "./${sha}/${expected}" ]; then
+            echo "FAIL: expected renamed file '${expected}' not found"
+            ls -la "./${sha}/" 2>/dev/null || echo "(staged dir missing)"
+            exit 1
+          fi
+          echo "PASS: deep nested path renamed to ${expected}"
+
+      - name: Assert another dir path renamed correctly
+        run: |
+          sha="${GITHUB_SHA}"
+          expected="another_dir_test.ipynb"
+          if [ ! -f "./${sha}/${expected}" ]; then
+            echo "FAIL: expected renamed file '${expected}' not found"
+            ls -la "./${sha}/" 2>/dev/null || echo "(staged dir missing)"
+            exit 1
+          fi
+          echo "PASS: another/dir path renamed to ${expected}"
+
+      - name: Assert toplevel file name unchanged
+        run: |
+          sha="${GITHUB_SHA}"
+          expected="toplevel.ipynb"
+          if [ ! -f "./${sha}/${expected}" ]; then
+            echo "FAIL: expected file '${expected}' not found"
+            ls -la "./${sha}/" 2>/dev/null || echo "(staged dir missing)"
+            exit 1
+          fi
+          echo "PASS: toplevel file name unchanged"
+
+      - name: Assert all notebooks present in staged directory
+        run: |
+          sha="${GITHUB_SHA}"
+          notebooks=$(ls "./${sha}" | xargs)
+          echo "notebooks: $notebooks"
+          for expected in "deep_nested_path_notebook.ipynb" "another_dir_test.ipynb" "toplevel.ipynb"; do
+            if ! echo "$notebooks" | grep -q "$expected"; then
+              echo "FAIL: '$expected' not found in notebooks output: $notebooks"
+              exit 1
+            fi
+          done
+          echo "PASS: all expected notebooks found in staged directory"
