@@ -1,0 +1,58 @@
+name: Test default input values
+on:
+  workflow_dispatch:
+jobs:
+  test-default-inputs:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_REF: refs/heads/main
+      GITHUB_EVENT_NAME: push
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Create a dummy notebook file
+      - name: Create test notebook
+        run: |
+          echo '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}' > sample.ipynb
+
+      # Run the action with only required inputs (using all defaults for optional ones)
+      # The action will fail at setup-cloud-sdk due to no GCP credentials
+      # but we verify the stage-files step runs with default values
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          gcs_source_bucket: 'my-project/nbr/source'
+          gcs_output_bucket: 'my-project/nbr/output'
+          allowlist: 'sample.ipynb'
+          # vertex_machine_type defaults to n1-standard-4
+          # region defaults to us-central1
+          # add_comment defaults to true
+          # kernel_name defaults to python3
+          # vertex_container_name defaults to gcr.io/deeplearning-platform-release/base-cu110:latest
+
+      # Verify the staging directory was created (stage-files step ran)
+      - name: Assert staging directory was created with default inputs
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          echo "Checking staging directory: ./${COMMIT_SHA}"
+          if [ ! -d "./${COMMIT_SHA}" ]; then
+            echo "FAIL: staging directory ./${COMMIT_SHA} was not created"
+            exit 1
+          fi
+          echo "PASS: staging directory exists"
+
+      # Verify the notebook was staged
+      - name: Assert notebook was staged
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          EXPECTED_FILE="./${COMMIT_SHA}/sample.ipynb"
+          echo "Checking staged file: ${EXPECTED_FILE}"
+          if [ ! -f "${EXPECTED_FILE}" ]; then
+            echo "FAIL: staged notebook not found at ${EXPECTED_FILE}"
+            ls -la "./${COMMIT_SHA}/" || echo "Directory listing failed"
+            exit 1
+          fi
+          echo "PASS: notebook staged correctly with default inputs"

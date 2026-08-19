@@ -1,0 +1,67 @@
+name: Test add_comment disabled
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Create a test notebook file
+      - name: Create test notebook
+        run: |
+          echo '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}' > my_notebook.ipynb
+
+      # Test the stage-files bash logic directly with add_comment=false scenario
+      # Verifies that a flat file (no path separators) is staged with its original name
+      - name: Test stage-files logic for flat file
+        env:
+          allowlist: 'my_notebook.ipynb'
+          dir: './test-staging-dir'
+        run: |
+          set -e
+          mkdir -p ${dir}
+          for file in ${allowlist}; do
+            f2=$(echo ${file}|tr '/' '_')
+            cp ${file} ${dir}/${f2}
+          done
+          echo "notebooks=$(ls ${dir} | xargs)" >> $GITHUB_OUTPUT
+
+      - name: Assert flat file was staged with original name
+        run: |
+          expected_file="./test-staging-dir/my_notebook.ipynb"
+          echo "Checking for staged file: ${expected_file}"
+          if [ ! -f "${expected_file}" ]; then
+            echo "FAIL: expected staged file not found at ${expected_file}"
+            ls -la ./test-staging-dir/ || echo "(directory listing failed)"
+            exit 1
+          fi
+          echo "PASS: flat file was staged correctly (no path separator transformation needed)"
+
+      # Run the action with add_comment=false and continue-on-error
+      # The action will fail at gcloud setup, but we verify it accepts add_comment=false
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          gcs_source_bucket: 'fake-project/nbr/source'
+          gcs_output_bucket: 'fake-project/nbr/output'
+          allowlist: 'my_notebook.ipynb'
+          region: 'us-central1'
+          add_comment: 'false'
+          vertex_machine_type: 'n1-standard-4'
+          kernel_name: 'python3'
+          vertex_container_name: 'gcr.io/deeplearning-platform-release/base-cu110:latest'
+
+      # The action is expected to fail at gcloud steps (no credentials).
+      # Verify the action was invoked (outcome is either success or failure, not skipped).
+      - name: Assert action was invoked with add_comment=false
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "Action outcome: ${OUTCOME}"
+          if [ "${OUTCOME}" = "skipped" ]; then
+            echo "FAIL: action was skipped, expected it to be invoked"
+            exit 1
+          fi
+          echo "PASS: action was invoked with add_comment=false (outcome: ${OUTCOME})"

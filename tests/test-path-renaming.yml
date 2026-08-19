@@ -1,0 +1,58 @@
+name: Test path renaming in stage-files
+on:
+  workflow_dispatch:
+jobs:
+  test-path-renaming:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_REF: refs/heads/main
+      GITHUB_EVENT_NAME: push
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Create a nested notebook file to test path-to-underscore renaming
+      - name: Create nested test notebook
+        run: |
+          mkdir -p subdir/nested
+          echo '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}' > subdir/nested/my-notebook.ipynb
+
+      # Run the action with a nested path - it will fail at setup-cloud-sdk
+      # but we verify the stage-files step renames paths correctly
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          gcs_source_bucket: 'fake-project/nbr/source'
+          gcs_output_bucket: 'fake-project/nbr/output'
+          allowlist: 'subdir/nested/my-notebook.ipynb'
+          vertex_machine_type: 'n1-standard-4'
+          region: 'us-east4'
+          add_comment: 'false'
+          kernel_name: 'python3'
+
+      # Verify the staging directory was created
+      - name: Assert staging directory was created
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          echo "Checking staging directory: ./${COMMIT_SHA}"
+          if [ ! -d "./${COMMIT_SHA}" ]; then
+            echo "FAIL: staging directory ./${COMMIT_SHA} was not created"
+            exit 1
+          fi
+          echo "PASS: staging directory exists"
+
+      # Verify the nested path was renamed: subdir/nested/my-notebook.ipynb -> subdir_nested_my-notebook.ipynb
+      - name: Assert nested path was renamed with underscores
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          echo "Checking renamed notebook file"
+          EXPECTED_FILE="./${COMMIT_SHA}/subdir_nested_my-notebook.ipynb"
+          echo "Expected file: ${EXPECTED_FILE}"
+          ls -la "./${COMMIT_SHA}/" || echo "Directory listing failed"
+          if [ ! -f "${EXPECTED_FILE}" ]; then
+            echo "FAIL: renamed notebook file not found at ${EXPECTED_FILE}"
+            exit 1
+          fi
+          echo "PASS: nested path was correctly renamed with underscores"

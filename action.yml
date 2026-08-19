@@ -74,16 +74,16 @@ runs:
         set -x;
 
         mkdir -p "${dir}";
-        IFS=',' read -ra allowlist_files <<< "${allowlist}";
-        for file in "${allowlist_files[@]}";
+        IFS=',' read -ra files <<< "${allowlist}";
+        for file in "${files[@]}";
         do
           file="${file## }";
           file="${file%% }";
           f2=$(echo "${file}"|tr '/' '_');
           cp "${file}" "${dir}/${f2}";
         done;
-        safe_notebooks=$(ls "${dir}" | xargs | tr -d '\n\r')
-        printf 'notebooks=%s\n' "${safe_notebooks}" >> "$GITHUB_OUTPUT"
+        safe_notebooks=$(ls "${dir}" | xargs | tr -d '\n\r');
+        echo "notebooks=${safe_notebooks}" >> "$GITHUB_OUTPUT"
     # Setup gcloud CLI
     - name: 'setup-cloud-sdk'
       uses: 'google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f' # v2
@@ -110,8 +110,8 @@ runs:
         set -x;
         echo '{"jobs": []}' > jobs.json
 
-        IFS=',' read -ra notebook_files <<< "${notebooks}";
-        for file in "${notebook_files[@]}";
+        IFS=',' read -ra nb_files <<< "${notebooks}";
+        for file in "${nb_files[@]}";
         do
           file="${file## }";
           file="${file%% }";
@@ -124,17 +124,17 @@ runs:
              --format=json \
              --region="${region}" \
              --display-name="${job_name}" \
-             --labels=commit_sha="${commit_sha}" \
-             --worker-pool-spec=machine-type="${machine_type}",replica-count="1",container-image-uri="${container}" \
-             --args=nbexecutor,--input-notebook="${source_file}",--output-notebook="${output_file}",--kernel-name="${kernel}");
+             --labels="commit_sha=${commit_sha}" \
+             --worker-pool-spec="machine-type=${machine_type},replica-count=1,container-image-uri=${container}" \
+             --args="nbexecutor,--input-notebook=${source_file},--output-notebook=${output_file},--kernel-name=${kernel}");
 
           echo "$output" | jq -c > training.json
           jq '.jobs[.jobs | length] |= . + '$(cat training.json) jobs.json > jobs_new.json
           cat jobs_new.json | jq -c > jobs.json
 
         done;
-        safe_jobs=$(cat jobs.json | tr -d '\n\r')
-        printf 'training_jobs=%s\n' "${safe_jobs}" >> "$GITHUB_OUTPUT"
+        safe_jobs=$(printf '%s' "$(cat jobs.json)" | tr -d '\n\r');
+        echo "training_jobs=${safe_jobs}" >> "$GITHUB_OUTPUT"
     - name: 'add-comment'
       env:
         vertex_job_uri: 'https://console.cloud.google.com/vertex-ai/locations'

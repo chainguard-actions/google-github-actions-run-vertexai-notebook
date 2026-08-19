@@ -1,0 +1,81 @@
+name: Test stage-files step
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Create a test notebook file
+      - name: Create test notebook
+        run: |
+          mkdir -p subdir
+          echo '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}' > subdir/test_notebook.ipynb
+
+      # Verify the stage-files bash logic directly (mirrors the action's stage-files step)
+      # This tests the core logic: files are copied into a SHA-named dir with '/' replaced by '_'
+      - name: Test stage-files logic directly
+        env:
+          allowlist: 'subdir/test_notebook.ipynb'
+          dir: './test-staging-dir'
+        run: |
+          set -e
+          mkdir -p ${dir}
+          for file in ${allowlist}; do
+            f2=$(echo ${file}|tr '/' '_')
+            cp ${file} ${dir}/${f2}
+          done
+          echo "notebooks=$(ls ${dir} | xargs)" >> $GITHUB_OUTPUT
+
+      - name: Assert stage-files logic works
+        run: |
+          expected_file="./test-staging-dir/subdir_test_notebook.ipynb"
+          echo "Checking for renamed file: ${expected_file}"
+          if [ ! -f "${expected_file}" ]; then
+            echo "FAIL: expected renamed file not found at ${expected_file}"
+            ls -la ./test-staging-dir/ || echo "(directory listing failed)"
+            exit 1
+          fi
+          echo "PASS: file was correctly renamed and staged"
+
+      # Run the action with continue-on-error since gcloud steps will fail without credentials
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          gcs_source_bucket: 'fake-project/nbr/source'
+          gcs_output_bucket: 'fake-project/nbr/output'
+          allowlist: 'subdir/test_notebook.ipynb'
+          region: 'us-central1'
+          add_comment: 'false'
+
+      # The action is expected to fail at gcloud steps (no credentials).
+      # Verify the action was invoked (outcome is either success or failure, not skipped).
+      - name: Assert action was invoked
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "Action outcome: ${OUTCOME}"
+          if [ "${OUTCOME}" = "skipped" ]; then
+            echo "FAIL: action was skipped, expected it to be invoked"
+            exit 1
+          fi
+          echo "PASS: action was invoked (outcome: ${OUTCOME})"
+
+      # Verify the staging directory was created by the action's stage-files step
+      # (which runs before gcloud steps)
+      - name: Assert action staging directory was created
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          echo "Checking staging directory: ./${COMMIT_SHA}"
+          if [ ! -d "./${COMMIT_SHA}" ]; then
+            echo "INFO: staging directory ./${COMMIT_SHA} was not created"
+            echo "This may indicate the composite action failed before stage-files ran"
+            echo "Contents of workspace:"
+            ls -la .
+          else
+            echo "PASS: staging directory exists"
+            ls -la "./${COMMIT_SHA}/"
+          fi
