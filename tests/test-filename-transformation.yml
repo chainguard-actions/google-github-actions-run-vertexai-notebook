@@ -1,0 +1,102 @@
+name: Test filename slash-to-underscore transformation
+on:
+  workflow_dispatch:
+jobs:
+  test-filename-transformation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Create test notebook files in nested directories
+      - name: Create nested test notebook files
+        run: |
+          mkdir -p deep/nested/dir
+          echo '{}' > deep/nested/dir/notebook.ipynb
+          echo '{}' > toplevel.ipynb
+
+      # Call the action under test with nested paths in the allowlist.
+      # The action's stage-files step transforms slashes to underscores.
+      # The action will fail at GCP steps (no credentials), but stage-files runs first.
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          gcs_source_bucket: 'fake-project/nbr/source'
+          gcs_output_bucket: 'fake-project/nbr/output'
+          allowlist: 'deep/nested/dir/notebook.ipynb toplevel.ipynb'
+          region: 'us-central1'
+          add_comment: 'false'
+
+      # Verify the staging directory contains files with slashes replaced by underscores
+      - name: Assert deep nested path was transformed correctly
+        run: |
+          STAGING_DIR="./${{ github.sha }}"
+          echo "Contents of staging dir:"
+          ls -la "$STAGING_DIR" || echo "(directory not found)"
+
+          if [ ! -f "$STAGING_DIR/deep_nested_dir_notebook.ipynb" ]; then
+            echo "FAIL: deep_nested_dir_notebook.ipynb not found (expected slash->underscore transform)"
+            exit 1
+          fi
+          echo "PASS: deep/nested/dir/notebook.ipynb correctly staged as deep_nested_dir_notebook.ipynb"
+
+      - name: Assert top-level file name is unchanged
+        run: |
+          STAGING_DIR="./${{ github.sha }}"
+          if [ ! -f "$STAGING_DIR/toplevel.ipynb" ]; then
+            echo "FAIL: toplevel.ipynb not found in staging dir"
+            exit 1
+          fi
+          echo "PASS: toplevel.ipynb correctly staged (no slashes, name unchanged)"
+
+      # Also verify the transformation logic directly
+      - name: Verify tr slash-to-underscore transformation logic
+        id: transform
+        run: |
+          FILE1="deep/nested/dir/notebook.ipynb"
+          FILE2="toplevel.ipynb"
+          FILE3="some/path/my_notebook.ipynb"
+
+          TRANSFORMED1=$(echo "$FILE1" | tr '/' '_')
+          TRANSFORMED2=$(echo "$FILE2" | tr '/' '_')
+          TRANSFORMED3=$(echo "$FILE3" | tr '/' '_')
+
+          echo "transformed1=$TRANSFORMED1" >> $GITHUB_OUTPUT
+          echo "transformed2=$TRANSFORMED2" >> $GITHUB_OUTPUT
+          echo "transformed3=$TRANSFORMED3" >> $GITHUB_OUTPUT
+
+      - name: Assert deep nested path transformation result
+        env:
+          ACTUAL: ${{ steps.transform.outputs.transformed1 }}
+        run: |
+          echo "actual: $ACTUAL"
+          EXPECTED="deep_nested_dir_notebook.ipynb"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "FAIL: expected '$EXPECTED', got '$ACTUAL'"
+            exit 1
+          fi
+          echo "PASS: deep nested path correctly transformed"
+
+      - name: Assert top-level file unchanged by transformation
+        env:
+          ACTUAL: ${{ steps.transform.outputs.transformed2 }}
+        run: |
+          echo "actual: $ACTUAL"
+          EXPECTED="toplevel.ipynb"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "FAIL: expected '$EXPECTED', got '$ACTUAL'"
+            exit 1
+          fi
+          echo "PASS: top-level file name unchanged (no slashes to replace)"
+
+      - name: Assert path with underscore in name
+        env:
+          ACTUAL: ${{ steps.transform.outputs.transformed3 }}
+        run: |
+          echo "actual: $ACTUAL"
+          EXPECTED="some_path_my_notebook.ipynb"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "FAIL: expected '$EXPECTED', got '$ACTUAL'"
+            exit 1
+          fi
+          echo "PASS: path with underscore in name correctly transformed"

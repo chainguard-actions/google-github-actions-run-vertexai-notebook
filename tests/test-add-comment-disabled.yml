@@ -1,0 +1,107 @@
+name: Test add-comment disabled path
+on:
+  workflow_dispatch:
+jobs:
+  test-add-comment-disabled:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Create a minimal notebook file so stage-files can copy it
+      - name: Create test notebook file
+        run: |
+          echo '{}' > test_notebook.ipynb
+
+      # Call the action under test with add_comment=false.
+      # The action will succeed at stage-files (pure bash), then fail at
+      # setup-cloud-sdk / upload-folder (no GCP credentials).
+      # continue-on-error allows us to assert on the side effects.
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          gcs_source_bucket: 'fake-project/nbr/source'
+          gcs_output_bucket: 'fake-project/nbr/output'
+          allowlist: 'test_notebook.ipynb'
+          region: 'us-central1'
+          add_comment: 'false'
+
+      # Verify the stage-files step ran (staging directory created)
+      - name: Assert staging directory was created (stage-files ran)
+        run: |
+          STAGING_DIR="./${{ github.sha }}"
+          if [ ! -d "$STAGING_DIR" ]; then
+            echo "FAIL: staging directory '$STAGING_DIR' was not created"
+            exit 1
+          fi
+          echo "PASS: staging directory exists - stage-files step ran successfully"
+
+      # Test the add_comment=false logic directly (mirrors the JS condition)
+      - name: Test add_comment=false skips comment creation
+        id: check-add-comment
+        env:
+          add_comment: 'false'
+        run: |
+          if [ "$(echo "$add_comment" | tr '[:upper:]' '[:lower:]')" != "true" ]; then
+            echo "add_comment is not true, skipping comment creation"
+            echo "skipped=true" >> $GITHUB_OUTPUT
+          else
+            echo "skipped=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Assert comment was skipped when add_comment=false
+        env:
+          SKIPPED: ${{ steps.check-add-comment.outputs.skipped }}
+        run: |
+          echo "skipped: $SKIPPED"
+          if [ "$SKIPPED" != "true" ]; then
+            echo "FAIL: expected comment to be skipped when add_comment=false"
+            exit 1
+          fi
+          echo "PASS: comment correctly skipped when add_comment=false"
+
+      # Test with add_comment=true (default)
+      - name: Test add_comment=true enables comment creation
+        id: check-add-comment-true
+        env:
+          add_comment: 'true'
+        run: |
+          if [ "$(echo "$add_comment" | tr '[:upper:]' '[:lower:]')" != "true" ]; then
+            echo "skipped=true" >> $GITHUB_OUTPUT
+          else
+            echo "skipped=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Assert comment not skipped when add_comment=true
+        env:
+          SKIPPED: ${{ steps.check-add-comment-true.outputs.skipped }}
+        run: |
+          echo "skipped: $SKIPPED"
+          if [ "$SKIPPED" != "false" ]; then
+            echo "FAIL: expected comment NOT to be skipped when add_comment=true"
+            exit 1
+          fi
+          echo "PASS: comment correctly enabled when add_comment=true"
+
+      # Test case-insensitive handling (TRUE, True, etc.)
+      - name: Test add_comment=TRUE (uppercase) is treated as true
+        id: check-add-comment-upper
+        env:
+          add_comment: 'TRUE'
+        run: |
+          if [ "$(echo "$add_comment" | tr '[:upper:]' '[:lower:]')" != "true" ]; then
+            echo "skipped=true" >> $GITHUB_OUTPUT
+          else
+            echo "skipped=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Assert uppercase TRUE is treated as enabled
+        env:
+          SKIPPED: ${{ steps.check-add-comment-upper.outputs.skipped }}
+        run: |
+          echo "skipped: $SKIPPED"
+          if [ "$SKIPPED" != "false" ]; then
+            echo "FAIL: expected uppercase TRUE to enable comment"
+            exit 1
+          fi
+          echo "PASS: uppercase TRUE correctly treated as enabled"

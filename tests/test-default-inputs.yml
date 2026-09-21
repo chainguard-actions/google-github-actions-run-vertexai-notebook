@@ -1,0 +1,84 @@
+name: Test default input values
+# Tests that the action's default input values are correctly documented.
+# Verifies the expected defaults for vertex_machine_type, region, add_comment,
+# kernel_name, and vertex_container_name.
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Create a dummy notebook file so the stage-files step has something to work with
+      - name: Create dummy notebook file
+        run: |
+          echo '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}' > mynotebook.ipynb
+
+      # Run the action with only required inputs (relying on defaults for optional ones).
+      # The action will fail at the gcloud setup step (no GCP credentials in CI),
+      # but the stage-files step runs first, confirming the action is invoked correctly.
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          gcs_source_bucket: fake-project/nbr/source
+          gcs_output_bucket: fake-project/nbr/output
+          allowlist: mynotebook.ipynb
+
+      # Verify the action.yml documents the correct defaults
+      - name: Verify default values in action.yml
+        run: |
+          set -e
+          ACTION_YML="$GITHUB_WORKSPACE/action.yml"
+
+          # Check vertex_machine_type default
+          if grep -q "default: 'n1-standard-4'" "${ACTION_YML}"; then
+            echo "PASS: vertex_machine_type default is n1-standard-4"
+          else
+            echo "FAIL: vertex_machine_type default not found or incorrect"
+            exit 1
+          fi
+
+          # Check region default
+          if grep -q "default: 'us-central1'" "${ACTION_YML}"; then
+            echo "PASS: region default is us-central1"
+          else
+            echo "FAIL: region default not found or incorrect"
+            exit 1
+          fi
+
+          # Check add_comment default
+          if grep -q "default: 'true'" "${ACTION_YML}"; then
+            echo "PASS: add_comment default is true"
+          else
+            echo "FAIL: add_comment default not found or incorrect"
+            exit 1
+          fi
+
+          # Check kernel_name default
+          if grep -q "default: 'python3'" "${ACTION_YML}"; then
+            echo "PASS: kernel_name default is python3"
+          else
+            echo "FAIL: kernel_name default not found or incorrect"
+            exit 1
+          fi
+
+          # Check vertex_container_name default
+          if grep -q "gcr.io/deeplearning-platform-release/base-cu110:latest" "${ACTION_YML}"; then
+            echo "PASS: vertex_container_name default is gcr.io/deeplearning-platform-release/base-cu110:latest"
+          else
+            echo "FAIL: vertex_container_name default not found or incorrect"
+            exit 1
+          fi
+
+      # Verify the staging directory was created (stage-files step ran before gcloud failed)
+      - name: Assert stage-files ran before gcloud failure
+        run: |
+          dir="./${GITHUB_SHA}"
+          if [ ! -d "${dir}" ]; then
+            echo "FAIL: staging directory '${dir}' was not created by stage-files step"
+            exit 1
+          fi
+          echo "PASS: stage-files step ran successfully before gcloud failure"

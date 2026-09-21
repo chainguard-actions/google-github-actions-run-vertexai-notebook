@@ -1,0 +1,58 @@
+name: Test stage-files step (notebook staging logic)
+on:
+  workflow_dispatch:
+jobs:
+  test-stage-files:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Create fake notebook files to be staged by the action
+      - name: Create test notebook files
+        run: |
+          mkdir -p subdir
+          echo '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}' > test_notebook.ipynb
+          echo '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}' > subdir/another_notebook.ipynb
+
+      # Call the action under test. It will succeed at stage-files (pure bash),
+      # then fail at setup-cloud-sdk / upload-folder (no GCP credentials).
+      # continue-on-error allows us to assert on the side effects of stage-files.
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          gcs_source_bucket: 'fake-project/nbr/source'
+          gcs_output_bucket: 'fake-project/nbr/output'
+          allowlist: 'test_notebook.ipynb subdir/another_notebook.ipynb'
+          region: 'us-central1'
+          add_comment: 'false'
+
+      # The stage-files step creates a directory named after github.sha and copies
+      # notebooks into it with slashes replaced by underscores.
+      - name: Assert staging directory was created by action
+        run: |
+          echo "github.sha: ${{ github.sha }}"
+          STAGING_DIR="./${{ github.sha }}"
+          if [ ! -d "$STAGING_DIR" ]; then
+            echo "FAIL: staging directory '$STAGING_DIR' was not created"
+            exit 1
+          fi
+          echo "PASS: staging directory exists"
+
+      - name: Assert test_notebook.ipynb was staged
+        run: |
+          STAGING_DIR="./${{ github.sha }}"
+          if [ ! -f "$STAGING_DIR/test_notebook.ipynb" ]; then
+            echo "FAIL: test_notebook.ipynb not found in staging dir"
+            exit 1
+          fi
+          echo "PASS: test_notebook.ipynb correctly staged"
+
+      - name: Assert subdir_another_notebook.ipynb was staged with slash-to-underscore
+        run: |
+          STAGING_DIR="./${{ github.sha }}"
+          if [ ! -f "$STAGING_DIR/subdir_another_notebook.ipynb" ]; then
+            echo "FAIL: subdir_another_notebook.ipynb not found in staging dir (slash->underscore transform)"
+            exit 1
+          fi
+          echo "PASS: subdir/another_notebook.ipynb correctly staged as subdir_another_notebook.ipynb"
