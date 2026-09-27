@@ -68,29 +68,34 @@ runs:
     - name: 'stage-files'
       shell: 'bash'
       env:
-        allowlist: '${{ inputs.allowlist }}'
-        dir: './${{ github.sha }}'
+        INPUT_ALLOWLIST: '${{ inputs.allowlist }}'
+        INPUT_DIR: '${{ github.sha }}'
       run: |-
         set -x;
 
+        dir="./${INPUT_DIR}"
         mkdir -p "${dir}";
+
         files=()
-        if [ -n "$allowlist" ]; then
+        if [ -n "$INPUT_ALLOWLIST" ]; then
           while IFS= read -r -d '' t; do files+=("$t"); done \
-            < <(printf '%s' "$allowlist" | xargs printf '%s\0')
+            < <(printf '%s' "$INPUT_ALLOWLIST" | xargs printf '%s\0')
         fi
+
         for file in "${files[@]}";
         do
-          f2=$(printf '%s' "${file}" | tr '/' '_');
+          f2=$(echo "${file}" | tr '/' '_');
           cp "${file}" "${dir}/${f2}";
         done;
-        safe_notebooks=$(ls "${dir}" | xargs | tr -d '\n\r')
-        printf 'notebooks=%s\n' "${safe_notebooks}" >> "$GITHUB_OUTPUT"
+
+        raw_notebooks=$(ls "${dir}" | xargs)
+        safe_notebooks=$(printf '%s' "${raw_notebooks}" | tr -d '\n\r')
+        echo "notebooks=${safe_notebooks}" >> "$GITHUB_OUTPUT"
     # Setup gcloud CLI
     - name: 'setup-cloud-sdk'
-      uses: 'google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f' # v2
+      uses: 'chainguard-actions/google-github-actions-setup-gcloud@d4f09522daa23b17b4a85c8fc4d6383c028f6bb4' # v2
     - name: 'upload-folder'
-      uses: 'google-github-actions/upload-cloud-storage@c0f6160ff80057923ff50e5e567695cea181ec23' # v2
+      uses: 'chainguard-actions/google-github-actions-upload-cloud-storage@9de7090b5f9494d49dd2c517d31092034328d043' # v2
       with:
         path: './${{ github.sha }}'
         destination: '${{ inputs.gcs_source_bucket }}'
@@ -100,52 +105,54 @@ runs:
     - name: 'vertex-execution'
       shell: 'bash'
       env:
-        notebooks: '${{ inputs.allowlist }}'
-        commit_sha: '${{ github.sha }}'
-        output_location: 'gs://${{ inputs.gcs_output_bucket }}'
-        source_location: 'gs://${{ inputs.gcs_source_bucket }}'
-        machine_type: '${{ inputs.vertex_machine_type }}'
-        region: '${{ inputs.region }}'
-        kernel: '${{ inputs.kernel_name }}'
-        container: '${{ inputs.vertex_container_name }}'
+        INPUT_NOTEBOOKS: '${{ inputs.allowlist }}'
+        INPUT_COMMIT_SHA: '${{ github.sha }}'
+        INPUT_OUTPUT_LOCATION: 'gs://${{ inputs.gcs_output_bucket }}'
+        INPUT_SOURCE_LOCATION: 'gs://${{ inputs.gcs_source_bucket }}'
+        INPUT_MACHINE_TYPE: '${{ inputs.vertex_machine_type }}'
+        INPUT_REGION: '${{ inputs.region }}'
+        INPUT_KERNEL: '${{ inputs.kernel_name }}'
+        INPUT_CONTAINER: '${{ inputs.vertex_container_name }}'
       run: |-
         set -x;
         echo '{"jobs": []}' > jobs.json
 
-        nb_files=()
-        if [ -n "$notebooks" ]; then
-          while IFS= read -r -d '' t; do nb_files+=("$t"); done \
-            < <(printf '%s' "$notebooks" | xargs printf '%s\0')
+        notebooks=()
+        if [ -n "$INPUT_NOTEBOOKS" ]; then
+          while IFS= read -r -d '' t; do notebooks+=("$t"); done \
+            < <(printf '%s' "$INPUT_NOTEBOOKS" | xargs printf '%s\0')
         fi
-        for file in "${nb_files[@]}";
+
+        for file in "${notebooks[@]}";
         do
-          file=$(printf '%s' "${file}" | tr '/' '_');
-          job_name="${commit_sha}:${file}";
-          source_file="${source_location}/${commit_sha}/${file}";
-          output_file="${output_location}/${commit_sha}/${file}";
+          file=$(echo "${file}" | tr '/' '_');
+          job_name="${INPUT_COMMIT_SHA}:${file}";
+          source_file="${INPUT_SOURCE_LOCATION}/${INPUT_COMMIT_SHA}/${file}";
+          output_file="${INPUT_OUTPUT_LOCATION}/${INPUT_COMMIT_SHA}/${file}";
 
           output=$(gcloud ai custom-jobs create \
              --format=json \
-             "--region=${region}" \
-             "--display-name=${job_name}" \
-             "--labels=commit_sha=${commit_sha}" \
-             "--worker-pool-spec=machine-type=${machine_type},replica-count=1,container-image-uri=${container}" \
-             "--args=nbexecutor,--input-notebook=${source_file},--output-notebook=${output_file},--kernel-name=${kernel}");
+             --region="${INPUT_REGION}" \
+             --display-name="${job_name}" \
+             --labels="commit_sha=${INPUT_COMMIT_SHA}" \
+             --worker-pool-spec=machine-type="${INPUT_MACHINE_TYPE}",replica-count="1",container-image-uri="${INPUT_CONTAINER}" \
+             --args=nbexecutor,--input-notebook="${source_file}",--output-notebook="${output_file}",--kernel-name="${INPUT_KERNEL}");
 
-          printf '%s' "$output" | jq -c > training.json
+          echo "$output" | jq -c > training.json
           jq '.jobs[.jobs | length] |= . + '$(cat training.json) jobs.json > jobs_new.json
           cat jobs_new.json | jq -c > jobs.json
 
         done;
-        safe_jobs=$(cat jobs.json | tr -d '\n\r')
-        printf 'training_jobs=%s\n' "${safe_jobs}" >> "$GITHUB_OUTPUT"
+        raw_jobs=$(cat jobs.json)
+        safe_jobs=$(printf '%s' "${raw_jobs}" | tr -d '\n\r')
+        echo "name=training_jobs=${safe_jobs}" >> "$GITHUB_OUTPUT"
     - name: 'add-comment'
       env:
         vertex_job_uri: 'https://console.cloud.google.com/vertex-ai/locations'
         vertex_notebook_uri: 'https://notebooks.cloud.google.com/view'
         region: '${{ inputs.region }}'
         add_comment: '${{ inputs.add_comment }}'
-      uses: 'actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea' # ratchet:actions/github-script@v7.0.1
+      uses: 'chainguard-actions/actions-github-script@4c62f9a0a83dfd27b2898cadaa50c9f5878ab0f4' # ratchet:actions/github-script@v7.0.1
       with:
         script: |
           try {
