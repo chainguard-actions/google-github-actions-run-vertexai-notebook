@@ -74,16 +74,12 @@ runs:
         set -x;
 
         mkdir -p "${dir}";
-        files=();
-        if [ -n "$allowlist" ]; then
-          while IFS= read -r -d '' t; do files+=("$t"); done \
-            < <(printf '%s' "$allowlist" | xargs printf '%s\0')
-        fi
-        for file in "${files[@]}";
-        do
-          f2=$(echo "${file}"|tr '/' '_');
+        while IFS= read -r -d ',' file || [ -n "$file" ]; do
+          file="${file## }"; file="${file%% }";
+          [ -z "$file" ] && continue;
+          f2=$(printf '%s' "${file}"|tr '/' '_');
           cp "${file}" "${dir}/${f2}";
-        done;
+        done < <(printf '%s,' "${allowlist}")
         safe_notebooks=$(ls "${dir}" | xargs | tr -d '\n\r')
         echo "notebooks=${safe_notebooks}" >> "$GITHUB_OUTPUT"
     # Setup gcloud CLI
@@ -112,33 +108,29 @@ runs:
         set -x;
         echo '{"jobs": []}' > jobs.json
 
-        nb_files=();
-        if [ -n "$notebooks" ]; then
-          while IFS= read -r -d '' t; do nb_files+=("$t"); done \
-            < <(printf '%s' "$notebooks" | xargs printf '%s\0')
-        fi
-        for file in "${nb_files[@]}";
-        do
-          file=$(echo "${file}"|tr '/' '_');
+        while IFS= read -r -d ',' file || [ -n "$file" ]; do
+          file="${file## }"; file="${file%% }";
+          [ -z "$file" ] && continue;
+          file=$(printf '%s' "${file}"|tr '/' '_');
           job_name="${commit_sha}:${file}";
           source_file="${source_location}/${commit_sha}/${file}";
           output_file="${output_location}/${commit_sha}/${file}";
 
           output=$(gcloud ai custom-jobs create \
              --format=json \
-             "--region=${region}" \
+             --region="${region}" \
              --display-name="${job_name}" \
-             "--labels=commit_sha=${commit_sha}" \
-             "--worker-pool-spec=machine-type=${machine_type},replica-count=1,container-image-uri=${container}" \
-             "--args=nbexecutor,--input-notebook=${source_file},--output-notebook=${output_file},--kernel-name=${kernel}");
+             --labels=commit_sha="${commit_sha}" \
+             --worker-pool-spec=machine-type="${machine_type}",replica-count="1",container-image-uri="${container}" \
+             --args=nbexecutor,--input-notebook="${source_file}",--output-notebook="${output_file}",--kernel-name="${kernel}");
 
           echo "$output" | jq -c > training.json
           jq '.jobs[.jobs | length] |= . + '$(cat training.json) jobs.json > jobs_new.json
           cat jobs_new.json | jq -c > jobs.json
 
-        done;
-        safe_jobs=$(printf '%s' "$(cat jobs.json)" | tr -d '\n\r')
-        echo "training_jobs=${safe_jobs}" >> "$GITHUB_OUTPUT"
+        done < <(printf '%s,' "${notebooks}");
+        safe_jobs=$(cat jobs.json | tr -d '\n\r')
+        echo "name=training_jobs=${safe_jobs}" >> "$GITHUB_OUTPUT"
     - name: 'add-comment'
       env:
         vertex_job_uri: 'https://console.cloud.google.com/vertex-ai/locations'
