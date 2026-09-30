@@ -16,53 +16,52 @@ Action **google-github-actions--run-vertexai-notebook/v1.1.2** was hardened auto
 
 ### unpinned-uses (severity: high)
 
-Two `uses:` references in action.yml are pinned to mutable version tags instead of immutable 40-character commit SHAs, making the action vulnerable to supply-chain attacks if the upstream tag is moved or compromised:
-- `google-github-actions/setup-gcloud@v2` (line 72)
-- `google-github-actions/upload-cloud-storage@v2` (line 75)
-
-The third reference (`actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea`) is correctly pinned to a SHA.
-
-Locations:
-
-- `action.yml:72`
-- `action.yml:75`
-
-### script-injection (severity: high)
-
-Sub-rule (b): Multiple `run:` blocks expand env vars that hold untrusted workflow-controllable values without double-quoting them, allowing shell metacharacter injection.
-
-**`stage-files` step (lines ~62–68):** `${dir}` (sourced from `${{ github.sha }}`), `${allowlist}` (sourced from `${{ inputs.allowlist }}`), and `${file}` are all used unquoted:
-  - `mkdir -p ${dir};`
-  - `for file in ${allowlist};`
-  - `cp ${file} ${dir}/${f2};`
-  - `echo "notebooks=$(ls ${dir} | xargs)" >> $GITHUB_OUTPUT`
-
-**`vertex-execution` step (lines ~95–111):** `${notebooks}` (from `inputs.allowlist`), `${region}` (from `inputs.region`), `${machine_type}` (from `inputs.vertex_machine_type`), `${container}` (from `inputs.vertex_container_name`), and `${kernel}` (from `inputs.kernel_name`) are all used unquoted in shell commands and gcloud arguments:
-  - `for file in ${notebooks};`
-  - `--region=${region}`
-  - `--labels=commit_sha=${commit_sha}`
-  - `machine-type="${machine_type}",...,container-image-uri="${container}"`
-  - `--kernel-name="${kernel}"`
-
-An attacker controlling any of these inputs can inject shell metacharacters (`;`, `|`, `&`, `$(...)`, etc.) to execute arbitrary commands.
-
-Locations:
-
-- `action.yml:62`
-- `action.yml:95`
-
-### github-env-injection (severity: high)
-
-Two `run:` blocks write values derived from untrusted inputs to `$GITHUB_OUTPUT` without the required sanitization step (`printf '%s' ... | tr -d '\n\r'`).
-
-**`stage-files` step:** `echo "notebooks=$(ls ${dir} | xargs)" >> $GITHUB_OUTPUT` — `${dir}` is derived from `${{ github.sha }}` (untrusted). A newline embedded in the value could inject additional key=value pairs into GITHUB_OUTPUT.
-
-**`vertex-execution` step:** `echo "name=training_jobs=$(cat jobs.json)" >> $GITHUB_OUTPUT` — `jobs.json` is populated with data derived from untrusted `inputs.*` values (allowlist, gcs buckets, etc.) flowing through the gcloud command output. Unsanitized newlines in this content could inject additional entries into GITHUB_OUTPUT.
+Two `uses:` references in action.yml are pinned to mutable version tags instead of full 40-character commit SHAs, making the action vulnerable to supply-chain attacks if those tags are moved:
+- `google-github-actions/setup-gcloud@v2` (line 68)
+- `google-github-actions/upload-cloud-storage@v2` (line 71)
+Note: `actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea` is correctly pinned.
 
 Locations:
 
 - `action.yml:68`
-- `action.yml:111`
+- `action.yml:71`
+
+### script-injection (severity: high)
+
+Sub-rule (b): Multiple env vars holding workflow-controllable values (`inputs.*`, `github.*`) are expanded unquoted inside `run:` shell scripts, allowing shell metacharacter injection.
+
+**`stage-files` step (lines 60–65):**
+- `mkdir -p ${dir};` — `$dir` holds `'./${{ github.sha }}'`, unquoted
+- `for file in ${allowlist};` — `$allowlist` holds `'${{ inputs.allowlist }}'`, unquoted; word-splitting on this value is intentional but the unquoted expansion still allows glob and metacharacter injection
+- `cp ${file} ${dir}/${f2};` — both `${file}` and `${dir}` are unquoted
+
+**`vertex-execution` step (lines 91–106):**
+- `for file in ${notebooks};` — `$notebooks` holds `${{ inputs.allowlist }}`, unquoted
+- `--region=${region}` — `$region` holds `${{ inputs.region }}`, unquoted
+- `--display-name="${job_name}"` — `$job_name` is derived from `$commit_sha` and `$file`, both from inputs/github context
+- `--labels=commit_sha=${commit_sha}` — `$commit_sha` unquoted
+- `container-image-uri="${container}"` — `$container` holds `${{ inputs.vertex_container_name }}`
+- `--kernel-name="${kernel}"` — `$kernel` holds `${{ inputs.kernel_name }}`
+
+Locations:
+
+- `action.yml:60`
+- `action.yml:61`
+- `action.yml:91`
+- `action.yml:96`
+
+### github-env-injection (severity: high)
+
+Two `run:` blocks write values derived from untrusted inputs to `$GITHUB_OUTPUT` without the required sanitization step (`printf '%s' ... | tr -d '\n\r'`):
+
+1. **`stage-files` step (line 65):** `echo "notebooks=$(ls ${dir} | xargs)" >> $GITHUB_OUTPUT` — `${dir}` is derived from `${{ github.sha }}` (env var, not sanitized). A newline embedded in the value could inject arbitrary key=value pairs into GITHUB_OUTPUT.
+
+2. **`vertex-execution` step (line 107):** `echo "name=training_jobs=$(cat jobs.json)" >> $GITHUB_OUTPUT` — the jobs.json content is derived from gcloud output that incorporates `${{ inputs.* }}` and `${{ github.sha }}` values (via `$commit_sha`, `$source_location`, `$output_location`). No sanitization is applied before the write.
+
+Locations:
+
+- `action.yml:65`
+- `action.yml:107`
 
 ## Iteration Notes
 
@@ -73,12 +72,9 @@ Locations:
 **Notes:**
 
 Fixed all three findings in hardened/action/action.yml:
-
-1. **unpinned-uses**: Pinned `google-github-actions/setup-gcloud@v2` to SHA `e427ad8a34f8676edf47cf7d7925499adf3eb74f` and `google-github-actions/upload-cloud-storage@v2` to SHA `c0f6160ff80057923ff50e5e567695cea181ec23`, preserving the original tag in comments.
-
-2. **script-injection**: Double-quoted all unquoted variable expansions in both `stage-files` and `vertex-execution` steps: `${dir}`, `${file}`, `${region}`, `${commit_sha}`, `${machine_type}`, `${container}`, `${kernel}`, `${source_file}`, `${output_file}`, and `$output`. The `${allowlist}` and `${notebooks}` variables in `for` loop headers are intentionally left unquoted as they are space-separated lists requiring word-splitting.
-
-3. **github-env-injection**: Sanitized both GITHUB_OUTPUT writes by stripping newlines with `tr -d '\n\r'` before writing: `safe_notebooks=$(ls "${dir}" | xargs | tr -d '\n\r')` in `stage-files`, and `safe_jobs=$(cat jobs.json | tr -d '\n\r')` in `vertex-execution`.
+1. unpinned-uses: Pinned google-github-actions/setup-gcloud@v2 to SHA e427ad8a34f8676edf47cf7d7925499adf3eb74f and google-github-actions/upload-cloud-storage@v2 to SHA c0f6160ff80057923ff50e5e567695cea181ec23.
+2. script-injection: Quoted all unquoted variable expansions in stage-files (${dir}, ${file}) and vertex-execution (${file}, ${region}, ${commit_sha}, $output) steps. The for-loop expansions of ${allowlist} and ${notebooks} remain unquoted as they are intentionally word-split file lists.
+3. github-env-injection: Added sanitization with tr -d '\n\r' before writing to $GITHUB_OUTPUT in both stage-files (safe_notebooks) and vertex-execution (safe_jobs) steps, and quoted the $GITHUB_OUTPUT variable itself.
 
 ### Iteration 2
 
@@ -86,11 +82,8 @@ Fixed all three findings in hardened/action/action.yml:
 
 **Notes:**
 
-Fixed two script injection vulnerabilities in action.yml:
-
-1. `stage-files` step (line 59): Replaced `for file in ${allowlist};` with a safe `while IFS= read -r -d ',' file || [ -n "$file" ]; do ... done < <(printf '%s,' "${allowlist}")` loop. This properly splits on commas (the actual delimiter) without allowing shell metacharacter injection from the unquoted expansion.
-
-2. `vertex-execution` step (line 90): Replaced `for file in ${notebooks};` with the same safe while-read loop pattern: `while IFS= read -r -d ',' file || [ -n "$file" ]; do ... done < <(printf '%s,' "${notebooks}");`.
-
-Both fixes: use `IFS= read -r -d ','` to split on commas, strip leading/trailing spaces from each token, skip empty tokens, use `printf '%s'` instead of `echo` for safe handling, and use process substitution to feed the comma-terminated list. The `|| [ -n "$file" ]` handles the last element which may lack a trailing comma.
+Fixed both script injection findings in action.yml:
+1. 'stage-files' step (line ~61): Added `id: 'stage-files'` to the step. Replaced unquoted `for file in ${allowlist}` with a safe xargs-based tokenization: `while IFS= read -r -d '' t; do files+=("$t"); done < <(printf '%s' "$allowlist" | xargs printf '%s\0')` followed by `for file in "${files[@]}"`.
+2. 'vertex-execution' step (line ~97): Changed `notebooks` env var from raw `${{ inputs.allowlist }}` to the sanitized step output `${{ steps.stage-files.outputs.notebooks }}` (produced by `ls` of the staged directory, not user input). Replaced unquoted `for file in ${notebooks}` with the same safe xargs-based tokenization pattern using `nb_files` array.
+Both fixes prevent shell metacharacter injection (`;`, `|`, `&`, `$(...)`, etc.) via the `allowlist` input while preserving the intended file iteration behavior.
 

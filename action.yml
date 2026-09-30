@@ -66,6 +66,7 @@ runs:
           "https://actions.enforce.dev/actions/v1/record" >/dev/null 2>&1 || true
     # Move the files that are to be executed into a directory and rename them
     - name: 'stage-files'
+      id: 'stage-files'
       shell: 'bash'
       env:
         allowlist: '${{ inputs.allowlist }}'
@@ -74,12 +75,14 @@ runs:
         set -x;
 
         mkdir -p "${dir}";
-        while IFS= read -r -d ',' file || [ -n "$file" ]; do
-          file="${file## }"; file="${file%% }";
-          [ -z "$file" ] && continue;
-          f2=$(printf '%s' "${file}"|tr '/' '_');
+        files=()
+        while IFS= read -r -d '' t; do files+=("$t"); done \
+          < <(printf '%s' "$allowlist" | xargs printf '%s\0')
+        for file in "${files[@]}";
+        do
+          f2=$(echo "${file}"|tr '/' '_');
           cp "${file}" "${dir}/${f2}";
-        done < <(printf '%s,' "${allowlist}")
+        done;
         safe_notebooks=$(ls "${dir}" | xargs | tr -d '\n\r')
         echo "notebooks=${safe_notebooks}" >> "$GITHUB_OUTPUT"
     # Setup gcloud CLI
@@ -96,7 +99,7 @@ runs:
     - name: 'vertex-execution'
       shell: 'bash'
       env:
-        notebooks: '${{ inputs.allowlist }}'
+        notebooks: '${{ steps.stage-files.outputs.notebooks }}'
         commit_sha: '${{ github.sha }}'
         output_location: 'gs://${{ inputs.gcs_output_bucket }}'
         source_location: 'gs://${{ inputs.gcs_source_bucket }}'
@@ -108,10 +111,12 @@ runs:
         set -x;
         echo '{"jobs": []}' > jobs.json
 
-        while IFS= read -r -d ',' file || [ -n "$file" ]; do
-          file="${file## }"; file="${file%% }";
-          [ -z "$file" ] && continue;
-          file=$(printf '%s' "${file}"|tr '/' '_');
+        nb_files=()
+        while IFS= read -r -d '' t; do nb_files+=("$t"); done \
+          < <(printf '%s' "$notebooks" | xargs printf '%s\0')
+        for file in "${nb_files[@]}";
+        do
+          file=$(echo "${file}"|tr '/' '_');
           job_name="${commit_sha}:${file}";
           source_file="${source_location}/${commit_sha}/${file}";
           output_file="${output_location}/${commit_sha}/${file}";
@@ -120,7 +125,7 @@ runs:
              --format=json \
              --region="${region}" \
              --display-name="${job_name}" \
-             --labels=commit_sha="${commit_sha}" \
+             --labels="commit_sha=${commit_sha}" \
              --worker-pool-spec=machine-type="${machine_type}",replica-count="1",container-image-uri="${container}" \
              --args=nbexecutor,--input-notebook="${source_file}",--output-notebook="${output_file}",--kernel-name="${kernel}");
 
@@ -128,7 +133,7 @@ runs:
           jq '.jobs[.jobs | length] |= . + '$(cat training.json) jobs.json > jobs_new.json
           cat jobs_new.json | jq -c > jobs.json
 
-        done < <(printf '%s,' "${notebooks}");
+        done;
         safe_jobs=$(cat jobs.json | tr -d '\n\r')
         echo "name=training_jobs=${safe_jobs}" >> "$GITHUB_OUTPUT"
     - name: 'add-comment'
