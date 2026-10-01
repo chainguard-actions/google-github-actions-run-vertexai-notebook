@@ -137,7 +137,7 @@ runs:
         vertex_notebook_uri: 'https://notebooks.cloud.google.com/view'
         region: '${{ inputs.region }}'
         add_comment: '${{ inputs.add_comment }}'
-      uses: 'chainguard-actions/actions-github-script@4c62f9a0a83dfd27b2898cadaa50c9f5878ab0f4' # ratchet:actions/github-script@v7.0.1
+      uses: 'chainguard-actions/actions-github-script@bb8e76f85a48e9086f7c4bcfb8fe1aae4193c7ef' # ratchet:actions/github-script@v7.0.1
       with:
         script: |
           try {
