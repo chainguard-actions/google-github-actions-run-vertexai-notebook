@@ -93,7 +93,7 @@ runs:
         echo "notebooks=${safe_notebooks}" >> "$GITHUB_OUTPUT"
     # Setup gcloud CLI
     - name: 'setup-cloud-sdk'
-      uses: 'chainguard-actions/google-github-actions-setup-gcloud@d4f09522daa23b17b4a85c8fc4d6383c028f6bb4' # v2
+      uses: 'chainguard-actions/google-github-actions-setup-gcloud@53199b694ab2e2adea63c7e22abe9b13c1357053' # v2
     - name: 'upload-folder'
       uses: 'chainguard-actions/google-github-actions-upload-cloud-storage@9de7090b5f9494d49dd2c517d31092034328d043' # v2
       with:
