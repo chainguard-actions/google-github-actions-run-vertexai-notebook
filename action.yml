@@ -66,7 +66,6 @@ runs:
           "https://actions.enforce.dev/actions/v1/record" >/dev/null 2>&1 || true
     # Move the files that are to be executed into a directory and rename them
     - name: 'stage-files'
-      id: 'stage-files'
       shell: 'bash'
       env:
         allowlist: '${{ inputs.allowlist }}'
@@ -75,15 +74,18 @@ runs:
         set -x;
 
         mkdir -p "${dir}";
-        files=()
-        while IFS= read -r -d '' t; do files+=("$t"); done \
-          < <(printf '%s' "$allowlist" | xargs printf '%s\0')
+        files=();
+        if [ -n "$allowlist" ]; then
+          while IFS= read -r -d '' t; do files+=("$t"); done \
+            < <(printf '%s' "$allowlist" | xargs printf '%s\0')
+        fi
         for file in "${files[@]}";
         do
           f2=$(echo "${file}"|tr '/' '_');
           cp "${file}" "${dir}/${f2}";
         done;
-        safe_notebooks=$(ls "${dir}" | xargs | tr -d '\n\r')
+        raw_notebooks=$(ls "${dir}" | xargs) || true
+        safe_notebooks=$(printf '%s' "$raw_notebooks" | tr -d '\n\r')
         echo "notebooks=${safe_notebooks}" >> "$GITHUB_OUTPUT"
     # Setup gcloud CLI
     - name: 'setup-cloud-sdk'
@@ -99,7 +101,7 @@ runs:
     - name: 'vertex-execution'
       shell: 'bash'
       env:
-        notebooks: '${{ steps.stage-files.outputs.notebooks }}'
+        notebooks: '${{ inputs.allowlist }}'
         commit_sha: '${{ github.sha }}'
         output_location: 'gs://${{ inputs.gcs_output_bucket }}'
         source_location: 'gs://${{ inputs.gcs_source_bucket }}'
@@ -111,9 +113,11 @@ runs:
         set -x;
         echo '{"jobs": []}' > jobs.json
 
-        nb_files=()
-        while IFS= read -r -d '' t; do nb_files+=("$t"); done \
-          < <(printf '%s' "$notebooks" | xargs printf '%s\0')
+        nb_files=();
+        if [ -n "$notebooks" ]; then
+          while IFS= read -r -d '' t; do nb_files+=("$t"); done \
+            < <(printf '%s' "$notebooks" | xargs printf '%s\0')
+        fi
         for file in "${nb_files[@]}";
         do
           file=$(echo "${file}"|tr '/' '_');
@@ -123,18 +127,19 @@ runs:
 
           output=$(gcloud ai custom-jobs create \
              --format=json \
-             --region="${region}" \
-             --display-name="${job_name}" \
-             --labels="commit_sha=${commit_sha}" \
-             --worker-pool-spec=machine-type="${machine_type}",replica-count="1",container-image-uri="${container}" \
-             --args=nbexecutor,--input-notebook="${source_file}",--output-notebook="${output_file}",--kernel-name="${kernel}");
+             "--region=${region}" \
+             "--display-name=${job_name}" \
+             "--labels=commit_sha=${commit_sha}" \
+             "--worker-pool-spec=machine-type=${machine_type},replica-count=1,container-image-uri=${container}" \
+             "--args=nbexecutor,--input-notebook=${source_file},--output-notebook=${output_file},--kernel-name=${kernel}");
 
           echo "$output" | jq -c > training.json
           jq '.jobs[.jobs | length] |= . + '$(cat training.json) jobs.json > jobs_new.json
           cat jobs_new.json | jq -c > jobs.json
 
         done;
-        safe_jobs=$(cat jobs.json | tr -d '\n\r')
+        raw_jobs=$(cat jobs.json) || true
+        safe_jobs=$(printf '%s' "$raw_jobs" | tr -d '\n\r')
         echo "name=training_jobs=${safe_jobs}" >> "$GITHUB_OUTPUT"
     - name: 'add-comment'
       env:
