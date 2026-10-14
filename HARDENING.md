@@ -16,62 +16,57 @@ Action **google-github-actions--run-vertexai-notebook/v1.1.1** was hardened auto
 
 ### unpinned-uses (severity: high)
 
-Two `uses:` references in action.yml are pinned to mutable version tags instead of immutable 40-character commit SHAs, making them vulnerable to supply-chain attacks if the upstream tag is moved:
-- `google-github-actions/setup-gcloud@v2` (line 69)
-- `google-github-actions/upload-cloud-storage@v2` (line 72)
-
-The third reference (`actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea`) is correctly pinned to a SHA.
+Two `uses:` references in action.yml are pinned to mutable version tags instead of full 40-character commit SHAs, making the action vulnerable to supply-chain attacks if the upstream tag is moved or compromised. Failing references: `google-github-actions/setup-gcloud@v2` and `google-github-actions/upload-cloud-storage@v2`. Note: `actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea` is correctly pinned.
 
 Locations:
 
-- `action.yml:69`
-- `action.yml:72`
+- `action.yml:71`
+- `action.yml:74`
 
 ### script-injection (severity: high)
 
-Sub-rule (b): Multiple env vars holding workflow-controllable (untrusted) data are expanded without double-quoting inside `run:` shell commands, allowing shell metacharacter injection.
+Sub-rule (b): Multiple env vars holding workflow-controllable (untrusted) data are expanded unquoted inside `run:` shell commands, allowing shell metacharacter injection.
 
-In the `stage-files` step (env vars `allowlist` from `inputs.allowlist` and `dir` from `github.sha`):
-- `mkdir -p ${dir};` — `${dir}` unquoted
-- `for file in ${allowlist};` — `${allowlist}` unquoted; word-splitting is intentional but still allows glob/metachar injection
-- `f2=$(echo ${file}|tr '/' '_');` — `${file}` unquoted
-- `cp ${file} ${dir}/${f2};` — `${file}` and `${dir}` unquoted
+**`stage-files` step (lines ~61-67):** `${dir}` (from `inputs.*`/`github.sha`) and `${allowlist}` (from `inputs.allowlist`) are used unquoted:
+  - `mkdir -p ${dir};`
+  - `for file in ${allowlist};`
+  - `cp ${file} ${dir}/${f2};`
+  - `echo "notebooks=$(ls ${dir} | xargs)" >> $GITHUB_OUTPUT`
 
-In the `vertex-execution` step (env vars `notebooks` from `inputs.allowlist`, `region` from `inputs.region`, `commit_sha` from `github.sha`):
-- `for file in ${notebooks};` — `${notebooks}` unquoted
-- `--region=${region}` — `${region}` unquoted
-- `--labels=commit_sha=${commit_sha}` — `${commit_sha}` unquoted
+**`vertex-execution` step (lines ~93-118):** `${notebooks}`, `${region}`, `${commit_sha}`, `${machine_type}`, `${container}` are all used unquoted:
+  - `for file in ${notebooks};`
+  - `--region=${region}`
+  - `--display-name="${job_name}"` (job_name built from unquoted vars)
+  - `--labels=commit_sha=${commit_sha}`
+  - `machine-type="${machine_type}"` and `container-image-uri="${container}"`
 
-All of these should use double-quoted expansions (e.g. `"${region}"`, `"${commit_sha}"`) to prevent shell metacharacter interpretation.
+All of these should be double-quoted (e.g. `"${dir}"`, `"${allowlist}"`, `"${region}"`) to prevent word-splitting and glob expansion of attacker-controlled values.
 
 Locations:
 
-- `action.yml:60`
 - `action.yml:61`
-- `action.yml:63`
-- `action.yml:64`
-- `action.yml:85`
-- `action.yml:88`
-- `action.yml:89`
+- `action.yml:62`
+- `action.yml:93`
+- `action.yml:100`
 
 ### github-env-injection (severity: high)
 
 Two `run:` steps write values derived from untrusted inputs to `$GITHUB_OUTPUT` without the required sanitization step (`printf '%s' ... | tr -d '\n\r'`).
 
-1. `stage-files` step (line 66): `echo "notebooks=$(ls ${dir} | xargs)" >> $GITHUB_OUTPUT` — `${dir}` is set from `github.sha` (untrusted). A newline embedded in the value could inject arbitrary key=value pairs into GITHUB_OUTPUT.
+**`stage-files` step:** `echo "notebooks=$(ls ${dir} | xargs)" >> $GITHUB_OUTPUT` — `${dir}` is set from `github.sha` (untrusted). A newline embedded in the SHA could inject additional key=value pairs into GITHUB_OUTPUT.
 
-2. `vertex-execution` step (line 97): `echo "name=training_jobs=$(cat jobs.json)" >> $GITHUB_OUTPUT` — `jobs.json` is built from user-controlled inputs (`inputs.allowlist`, `inputs.gcs_output_bucket`, `inputs.gcs_source_bucket`, etc.). Content with embedded newlines could inject additional output variables.
+**`vertex-execution` step:** `echo "name=training_jobs=$(cat jobs.json)" >> $GITHUB_OUTPUT` — `jobs.json` is constructed from unsanitized user-controlled inputs (`inputs.allowlist`, `inputs.gcs_output_bucket`, etc.). Newlines in those values could corrupt the GITHUB_OUTPUT file.
 
 Both writes must be preceded by sanitization, e.g.:
 ```bash
-safe=$(printf '%s' "$value" | tr -d '\n\r')
-echo "key=$safe" >> "$GITHUB_OUTPUT"
+safe=$(printf '%s' "$(ls ${dir} | xargs)" | tr -d '\n\r')
+echo "notebooks=$safe" >> "$GITHUB_OUTPUT"
 ```
 
 Locations:
 
-- `action.yml:66`
-- `action.yml:97`
+- `action.yml:67`
+- `action.yml:118`
 
 ## Iteration Notes
 
@@ -81,25 +76,17 @@ Locations:
 
 **Notes:**
 
-Fixed all three findings in hardened/action/action.yml:
+Fixed all three findings in action.yml: (1) Pinned google-github-actions/setup-gcloud@v2 to SHA e427ad8a34f8676edf47cf7d7925499adf3eb74f and google-github-actions/upload-cloud-storage@v2 to SHA c0f6160ff80057923ff50e5e567695cea181ec23. (2) Added double-quotes around all unquoted variable expansions in both run: steps (${dir}, ${file}, ${f2}, ${region}, ${commit_sha}, ${machine_type}, ${container}, ${source_file}, ${output_file}, ${kernel}, ${job_name}); the for-loop iterators over ${allowlist} and ${notebooks} are intentionally left unquoted to preserve upstream's whitespace-splitting behavior for the list input. (3) Sanitized both GITHUB_OUTPUT writes using `safe=$(printf '%s' "$(cmd)" | tr -d '\n\r')` before writing to prevent newline injection.
 
-1. **unpinned-uses**: Pinned `google-github-actions/setup-gcloud@v2` to SHA `e427ad8a34f8676edf47cf7d7925499adf3eb74f` and `google-github-actions/upload-cloud-storage@v2` to SHA `c0f6160ff80057923ff50e5e567695cea181ec23`, preserving the original tags in comments.
+### Iteration 2
 
-2. **script-injection**: 
-   - In `stage-files`: Added double-quotes around `${dir}`, `${file}`, `${f2}`. Replaced unquoted `for file in ${allowlist}` with xargs-based tokenization into a bash array (`files=()`), then iterated with `"${files[@]}"`.
-   - In `vertex-execution`: Added double-quotes around `${region}`, `${commit_sha}`. Replaced unquoted `for file in ${notebooks}` with xargs-based tokenization into a bash array (`nb_files=()`), then iterated with `"${nb_files[@]}"`.
-
-3. **github-env-injection**: 
-   - In `stage-files`: Captured `ls` output into `raw`, sanitized with `printf '%s' "$raw" | tr -d '\n\r'` into `safe`, then wrote `notebooks=${safe}` to `$GITHUB_OUTPUT`.
-   - In `vertex-execution`: Captured `jobs.json` content into `raw`, sanitized with `printf '%s' "$raw" | tr -d '\n\r'` into `safe`, then wrote `name=training_jobs=${safe}` to `$GITHUB_OUTPUT`.
-
-### Iteration 1
-
-**Fixes applied:** publish-gate
+**Fixes applied:** script-injection
 
 **Notes:**
 
-Fixed two bare assignments that would abort the step under errexit:
-1. action.yml line 69: Added `|| true` to `raw="$(ls "${dir}" | xargs)"` so a non-zero exit from ls doesn't abort the step, matching upstream behavior.
-2. action.yml line 124: Added `|| true` to `raw="$(cat jobs.json)"` so a non-zero exit from cat doesn't abort the step, matching upstream behavior.
+Fixed three script-injection issues in action.yml:
+1. 'stage-files' step: Replaced unquoted `for file in ${allowlist}` with a safe xargs-based tokenization into a bash array (`files`), guarded with `if [ -n "${allowlist}" ]` and using `xargs -r printf '%s\0'` with a null-delimited read loop. The array is then iterated with `"${files[@]}"`.
+2. 'vertex-execution' step: Applied the same xargs-based tokenization for `${notebooks}` into `nb_files` array, iterated with `"${nb_files[@]}"`.
+3. 'vertex-execution' step: Fixed unquoted `echo $output` to `echo "$output"` to prevent word splitting and glob expansion of gcloud output derived from attacker-controlled inputs.
+All fixes preserve the upstream whitespace-splitting behavior while preventing shell metacharacter injection.
 
