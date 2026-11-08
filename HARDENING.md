@@ -10,83 +10,74 @@
 
 **Harden Agent Version:** `2`
 
-Action **google-github-actions--run-vertexai-notebook/v1.1.1** was hardened automatically. 3 finding(s) were identified and resolved across 2 iteration(s).
+Action **google-github-actions--run-vertexai-notebook/v1.1.1** was hardened automatically. 5 finding(s) were identified and resolved across 1 iteration(s).
 
 ## Findings Fixed
 
-### unpinned-uses (severity: high)
+### script-injection (severity: high)
 
-Two `uses:` references in action.yml are pinned to mutable version tags instead of full 40-character commit SHAs, making the action vulnerable to supply-chain attacks if the upstream tag is moved or compromised. Failing references: `google-github-actions/setup-gcloud@v2` and `google-github-actions/upload-cloud-storage@v2`. Note: `actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea` is correctly pinned.
+Rule (b) violation in the 'stage-files' step. Shell variables that hold input data are expanded without quotes. allowlist comes from inputs.allowlist and dir comes from github.sha. Offending lines: `mkdir -p ${dir};`, `for file in ${allowlist};`, `f2=$(echo ${file}|tr '/' '_');`, `cp ${file} ${dir}/${f2};` and `echo "notebooks=$(ls ${dir} | xargs)"`.
 
 Locations:
 
-- `action.yml:71`
-- `action.yml:74`
+- `action.yml:60`
+- `action.yml:61`
+- `action.yml:63`
+- `action.yml:64`
+- `action.yml:66`
 
 ### script-injection (severity: high)
 
-Sub-rule (b): Multiple env vars holding workflow-controllable (untrusted) data are expanded unquoted inside `run:` shell commands, allowing shell metacharacter injection.
-
-**`stage-files` step (lines ~61-67):** `${dir}` (from `inputs.*`/`github.sha`) and `${allowlist}` (from `inputs.allowlist`) are used unquoted:
-  - `mkdir -p ${dir};`
-  - `for file in ${allowlist};`
-  - `cp ${file} ${dir}/${f2};`
-  - `echo "notebooks=$(ls ${dir} | xargs)" >> $GITHUB_OUTPUT`
-
-**`vertex-execution` step (lines ~93-118):** `${notebooks}`, `${region}`, `${commit_sha}`, `${machine_type}`, `${container}` are all used unquoted:
-  - `for file in ${notebooks};`
-  - `--region=${region}`
-  - `--display-name="${job_name}"` (job_name built from unquoted vars)
-  - `--labels=commit_sha=${commit_sha}`
-  - `machine-type="${machine_type}"` and `container-image-uri="${container}"`
-
-All of these should be double-quoted (e.g. `"${dir}"`, `"${allowlist}"`, `"${region}"`) to prevent word-splitting and glob expansion of attacker-controlled values.
+Rule (b) violation in the 'vertex-execution' step. Input-derived env vars are expanded without quotes. Offending lines: `for file in ${notebooks};` (from inputs.allowlist), `file=$(echo ${file}|tr '/' '_');`, `--region=${region} \` (from inputs.region), `--labels=commit_sha=${commit_sha} \` and `echo $output | jq -c > training.json`.
 
 Locations:
 
-- `action.yml:61`
-- `action.yml:62`
-- `action.yml:93`
-- `action.yml:100`
+- `action.yml:96`
+- `action.yml:98`
+- `action.yml:105`
+- `action.yml:107`
+- `action.yml:111`
 
 ### github-env-injection (severity: high)
 
-Two `run:` steps write values derived from untrusted inputs to `$GITHUB_OUTPUT` without the required sanitization step (`printf '%s' ... | tr -d '\n\r'`).
-
-**`stage-files` step:** `echo "notebooks=$(ls ${dir} | xargs)" >> $GITHUB_OUTPUT` — `${dir}` is set from `github.sha` (untrusted). A newline embedded in the SHA could inject additional key=value pairs into GITHUB_OUTPUT.
-
-**`vertex-execution` step:** `echo "name=training_jobs=$(cat jobs.json)" >> $GITHUB_OUTPUT` — `jobs.json` is constructed from unsanitized user-controlled inputs (`inputs.allowlist`, `inputs.gcs_output_bucket`, etc.). Newlines in those values could corrupt the GITHUB_OUTPUT file.
-
-Both writes must be preceded by sanitization, e.g.:
-```bash
-safe=$(printf '%s' "$(ls ${dir} | xargs)" | tr -d '\n\r')
-echo "notebooks=$safe" >> "$GITHUB_OUTPUT"
-```
+The 'stage-files' step writes to $GITHUB_OUTPUT a value built from file names taken from inputs.allowlist: `echo "notebooks=$(ls ${dir} | xargs)" >> $GITHUB_OUTPUT`. The value is not passed through `printf '%s' ... | tr -d '\n\r'` before the write.
 
 Locations:
 
-- `action.yml:67`
-- `action.yml:118`
+- `action.yml:66`
+
+### github-env-injection (severity: high)
+
+The 'vertex-execution' step writes jobs.json to $GITHUB_OUTPUT: `echo "name=training_jobs=$(cat jobs.json)" >> $GITHUB_OUTPUT`. jobs.json contains values derived from the inputs (display names from allowlist file names, plus the region, kernel and container inputs). The value is not passed through `printf '%s' ... | tr -d '\n\r'` before the write.
+
+Locations:
+
+- `action.yml:116`
+
+### unpinned-uses (severity: high)
+
+Two composite steps in action.yml reference actions by mutable tags instead of 40-character commit SHAs: `uses: 'google-github-actions/setup-gcloud@v2'` and `uses: 'google-github-actions/upload-cloud-storage@v2'`. The step using actions/github-script is pinned to a SHA and passes.
+
+Locations:
+
+- `action.yml:70`
+- `action.yml:73`
 
 ## Iteration Notes
 
 ### Iteration 1
 
-**Fixes applied:** unpinned-uses, script-injection, github-env-injection
+**Fixes applied:** script-injection, github-env-injection, unpinned-uses
 
 **Notes:**
 
-Fixed all three findings in action.yml: (1) Pinned google-github-actions/setup-gcloud@v2 to SHA e427ad8a34f8676edf47cf7d7925499adf3eb74f and google-github-actions/upload-cloud-storage@v2 to SHA c0f6160ff80057923ff50e5e567695cea181ec23. (2) Added double-quotes around all unquoted variable expansions in both run: steps (${dir}, ${file}, ${f2}, ${region}, ${commit_sha}, ${machine_type}, ${container}, ${source_file}, ${output_file}, ${kernel}, ${job_name}); the for-loop iterators over ${allowlist} and ${notebooks} are intentionally left unquoted to preserve upstream's whitespace-splitting behavior for the list input. (3) Sanitized both GITHUB_OUTPUT writes using `safe=$(printf '%s' "$(cmd)" | tr -d '\n\r')` before writing to prevent newline injection.
+All five findings are fixed in action.yml. Nothing has been run or tested yet.
 
-### Iteration 2
-
-**Fixes applied:** script-injection
-
-**Notes:**
-
-Fixed three script-injection issues in action.yml:
-1. 'stage-files' step: Replaced unquoted `for file in ${allowlist}` with a safe xargs-based tokenization into a bash array (`files`), guarded with `if [ -n "${allowlist}" ]` and using `xargs -r printf '%s\0'` with a null-delimited read loop. The array is then iterated with `"${files[@]}"`.
-2. 'vertex-execution' step: Applied the same xargs-based tokenization for `${notebooks}` into `nb_files` array, iterated with `"${nb_files[@]}"`.
-3. 'vertex-execution' step: Fixed unquoted `echo $output` to `echo "$output"` to prevent word splitting and glob expansion of gcloud output derived from attacker-controlled inputs.
-All fixes preserve the upstream whitespace-splitting behavior while preventing shell metacharacter injection.
+- **Pinned actions:** setup-gcloud@v2 is now pinned to e427ad8a34f8676edf47cf7d7925499adf3eb74f and upload-cloud-storage@v2 to c0f6160ff80057923ff50e5e567695cea181ec23. I got both SHAs from lookup_action_sha.
+- **Allowlist split:** in the stage-files and vertex-execution steps, the allowlist is still split on whitespace only, as upstream's unquoted for-loop did, using `read -r -d '' -a`. It is not split on commas, even though the input's description says "comma separated".
+- **Glob patterns:** upstream's unquoted loop also expanded patterns like `somedir/**.ipynb`. Each item is now expanded with `compgen -G`, and kept as written if nothing matches, which is what bash does by default.
+- **Quoting:** all paths and variables are now double-quoted, including dir, file, region and commit_sha. `echo` is replaced with `printf '%s'`.
+- **jq call:** the job JSON is now passed to jq with `--argjson` instead of being pasted unquoted into the jq expression. The resulting jobs list should be the same.
+- **Outputs:** both values written to `$GITHUB_OUTPUT` are captured first with `|| true` and then have newlines stripped with `tr -d '\n\r'`. The `|| true` keeps upstream's behaviour, where echo's exit status hid a failing `ls` or `cat`.
+- **Upstream quirk kept:** the `name=training_jobs=...` output key is left exactly as upstream wrote it, odd as it looks.
 
