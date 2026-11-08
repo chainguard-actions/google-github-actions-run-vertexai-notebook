@@ -10,59 +10,59 @@
 
 **Harden Agent Version:** `2`
 
-Action **google-github-actions--run-vertexai-notebook/v1.1.3** was hardened automatically. 3 finding(s) were identified and resolved across 2 iteration(s).
+Action **google-github-actions--run-vertexai-notebook/v1.1.3** was hardened automatically. 5 finding(s) were identified and resolved across 1 iteration(s).
 
 ## Findings Fixed
 
 ### unpinned-uses (severity: high)
 
-Two `uses:` references in action.yml are pinned to mutable version tags instead of full 40-character commit SHAs, making the action vulnerable to supply-chain attacks if those tags are moved:
-- `google-github-actions/setup-gcloud@v2` (line 68)
-- `google-github-actions/upload-cloud-storage@v2` (line 71)
-These should be pinned to specific commit SHAs (e.g. `google-github-actions/setup-gcloud@<40-hex-sha> # v2`).
+Composite action steps point to version tags instead of 40-character commit SHAs: line 70 `uses: 'google-github-actions/setup-gcloud@v2'` and line 73 `uses: 'google-github-actions/upload-cloud-storage@v2'`.
 
 Locations:
 
-- `action.yml:68`
-- `action.yml:71`
+- `action.yml:70`
+- `action.yml:73`
 
 ### script-injection (severity: high)
 
-Rule (b) violation — unquoted shell variable expansions of untrusted/workflow-controlled data in two `run:` blocks:
-
-**stage-files step (lines 60–65):** `${dir}` (sourced from `inputs.allowlist` and `github.sha`) and `${allowlist}` (sourced from `inputs.allowlist`) are expanded without double-quotes throughout the loop body:
-  - `mkdir -p ${dir};`
-  - `for file in ${allowlist};`
-  - `f2=$(echo ${file}|tr '/' '_');`
-  - `cp ${file} ${dir}/${f2};`
-
-Unquoted expansions allow shell metacharacters (`;`, `|`, `&`, `$(...)`, glob chars, whitespace) in attacker-controlled input values to be interpreted by the shell.
-
-**vertex-execution step (lines 94–103):** Multiple env vars sourced from `inputs.*` are expanded without double-quotes:
-  - `for file in ${notebooks};` — `notebooks` from `inputs.allowlist`
-  - `--region=${region}` — `region` from `inputs.region`
-  - `--labels=commit_sha=${commit_sha}` — `commit_sha` from `github.sha`
-  - `--kernel-name="${kernel}"` — `kernel` from `inputs.kernel_name` (quoted, but others in the same command are not)
+Rule (b) broken in step 'stage-files'. Shell variables holding untrusted data are used without double quotes. `allowlist` comes from inputs.allowlist and `dir` from github.sha. Offending lines: `mkdir -p ${dir};`, `for file in ${allowlist};`, `f2=$(echo ${file}|tr '/' '_');`, `cp ${file} ${dir}/${f2};`, `echo "notebooks=$(ls ${dir} | xargs)"`.
 
 Locations:
 
 - `action.yml:60`
 - `action.yml:61`
-- `action.yml:94`
+- `action.yml:63`
+- `action.yml:64`
+- `action.yml:66`
+
+### script-injection (severity: high)
+
+Rule (b) broken in step 'vertex-execution'. Env vars set from inputs are expanded without double quotes. Offending lines: `for file in ${notebooks};`, `file=$(echo ${file}|tr '/' '_');`, `--region=${region} \`, `--labels=commit_sha=${commit_sha} \`, `echo $output | jq -c > training.json` (the output includes input-derived data), and `jq '.jobs[.jobs | length] |= . + '$(cat training.json) jobs.json` (unquoted command substitution of input-derived data).
+
+Locations:
+
+- `action.yml:96`
 - `action.yml:98`
+- `action.yml:105`
+- `action.yml:107`
+- `action.yml:111`
+- `action.yml:112`
 
 ### github-env-injection (severity: high)
 
-Two `run:` steps write values derived from untrusted inputs to `$GITHUB_OUTPUT` without the required sanitization step (`printf '%s' ... | tr -d '\n\r'`):
-
-1. **stage-files step (line 66):** `echo "notebooks=$(ls ${dir} | xargs)" >> $GITHUB_OUTPUT` — the directory listing is derived from `${dir}` which is set from `inputs.allowlist` and `github.sha`. No newline sanitization is applied before the write.
-
-2. **vertex-execution step (line 107):** `echo "name=training_jobs=$(cat jobs.json)" >> $GITHUB_OUTPUT` — the content of `jobs.json` is built from unsanitized input-controlled values (`notebooks`/`inputs.allowlist`, `commit_sha`/`github.sha`, etc.). An attacker-controlled notebook filename containing a newline could inject arbitrary key=value pairs into `$GITHUB_OUTPUT`.
+Step 'stage-files' runs `echo "notebooks=$(ls ${dir} | xargs)" >> $GITHUB_OUTPUT`. The file names come from inputs.allowlist, and the value is written to $GITHUB_OUTPUT without first sanitizing it with `printf '%s' ... | tr -d '\n\r'`.
 
 Locations:
 
 - `action.yml:66`
-- `action.yml:107`
+
+### github-env-injection (severity: high)
+
+Step 'vertex-execution' runs `echo "name=training_jobs=$(cat jobs.json)" >> $GITHUB_OUTPUT`. jobs.json is built from gcloud output that contains input-controlled values (display name, args, container, kernel), and it is written to $GITHUB_OUTPUT without first sanitizing it with `printf '%s' ... | tr -d '\n\r'`.
+
+Locations:
+
+- `action.yml:116`
 
 ## Iteration Notes
 
@@ -72,16 +72,5 @@ Locations:
 
 **Notes:**
 
-Fixed all three findings in action.yml:
-1. unpinned-uses: Pinned google-github-actions/setup-gcloud@v2 to SHA e427ad8a34f8676edf47cf7d7925499adf3eb74f and google-github-actions/upload-cloud-storage@v2 to SHA c0f6160ff80057923ff50e5e567695cea181ec23.
-2. script-injection: In stage-files, tokenized the comma-separated allowlist input via xargs (replacing commas with spaces first) into a bash array and double-quoted all variable expansions. In vertex-execution, similarly tokenized notebooks into nb_files array and double-quoted all gcloud flag expansions.
-3. github-env-injection: Both GITHUB_OUTPUT writes now capture the value into a raw variable, sanitize with `printf '%s' "$raw" | tr -d '\n\r'`, and write the sanitized value. Also quoted $GITHUB_OUTPUT references.
-
-### Iteration 1
-
-**Fixes applied:** publish-gate
-
-**Notes:**
-
-Fixed all four publish-gate issues in action.yml: (1) Line 64: removed comma substitution from allowlist xargs pipeline (${allowlist//,/ } → ${allowlist}) to split on whitespace only, matching upstream; (2) Line 71: added '|| true' to ls capture assignment to preserve upstream behavior where non-zero exit was hidden; (3) Line 106: removed comma substitution from notebooks xargs pipeline (${notebooks//,/ } → ${notebooks}) to split on whitespace only, matching upstream; (4) Line 128: added '|| true' to cat capture assignment to preserve upstream behavior where non-zero exit was hidden.
+Pinned setup-gcloud@v2 to e427ad8a34f8676edf47cf7d7925499adf3eb74f and upload-cloud-storage@v2 to c0f6160ff80057923ff50e5e567695cea181ec23. In stage-files and vertex-execution, every variable is now double-quoted. allowlist is split into an array on whitespace with `read -r -d '' -a ... || true`, guarded so an empty value adds nothing. That matches how upstream's unquoted `for file in ${allowlist}` split it, except that it no longer expands globs. The gcloud output is passed to jq quoted with printf. The new job is appended with `jq --slurpfile` instead of pasting `$(cat training.json)` unquoted into the jq program; the resulting JSON is the same. Both $GITHUB_OUTPUT writes now capture the value first (with `|| true`, because upstream ran the command inside echo's arguments), strip it with `tr -d '\n\r'`, and write to a quoted "$GITHUB_OUTPUT".
 

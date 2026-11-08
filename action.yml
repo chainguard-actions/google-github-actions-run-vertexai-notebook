@@ -44,6 +44,7 @@ inputs:
     description: 'The base container image to use. Defaults to the basic Python container.'
     default: 'gcr.io/deeplearning-platform-release/base-cu110:latest'
     required: false
+
 runs:
   using: 'composite'
   steps:
@@ -74,22 +75,23 @@ runs:
         set -x;
 
         mkdir -p "${dir}";
-        files=();
-        if [ -n "$allowlist" ]; then
-          while IFS= read -r -d '' t; do files+=("$t"); done \
-            < <(printf '%s' "${allowlist}" | xargs -r printf '%s\0')
+        files=()
+        if [ -n "${allowlist}" ]; then
+          read -r -d '' -a files <<< "${allowlist}" || true
         fi
         for file in "${files[@]}";
         do
-          f2=$(echo "${file}"|tr '/' '_');
-          cp "${file}" "${dir}/${f2}";
+          f2=$(printf '%s' "${file}" | tr '/' '_');
+          cp -- "${file}" "${dir}/${f2}";
         done;
-        raw="$(ls "${dir}" | xargs)" || true
-        safe="$(printf '%s' "$raw" | tr -d '\n\r')"
-        echo "notebooks=${safe}" >> "$GITHUB_OUTPUT"
+        raw_notebooks="$(ls -- "${dir}" | xargs)" || true
+        safe_notebooks=$(printf '%s' "${raw_notebooks}" | tr -d '\n\r')
+        echo "notebooks=${safe_notebooks}" >> "$GITHUB_OUTPUT"
+
     # Setup gcloud CLI
     - name: 'setup-cloud-sdk'
-      uses: 'chainguard-actions/google-github-actions-setup-gcloud@53199b694ab2e2adea63c7e22abe9b13c1357053' # v2
+      uses: 'chainguard-actions/google-github-actions-setup-gcloud@d4f09522daa23b17b4a85c8fc4d6383c028f6bb4' # v2
+
     - name: 'upload-folder'
       uses: 'chainguard-actions/google-github-actions-upload-cloud-storage@9de7090b5f9494d49dd2c517d31092034328d043' # v2
       with:
@@ -98,6 +100,7 @@ runs:
         gzip: false
         headers: |-
           content-type: application/octet-stream
+
     - name: 'vertex-execution'
       shell: 'bash'
       env:
@@ -113,34 +116,34 @@ runs:
         set -x;
         echo '{"jobs": []}' > jobs.json
 
-        nb_files=();
-        if [ -n "$notebooks" ]; then
-          while IFS= read -r -d '' t; do nb_files+=("$t"); done \
-            < <(printf '%s' "${notebooks}" | xargs -r printf '%s\0')
+        nb_files=()
+        if [ -n "${notebooks}" ]; then
+          read -r -d '' -a nb_files <<< "${notebooks}" || true
         fi
         for file in "${nb_files[@]}";
         do
-          file=$(echo "${file}"|tr '/' '_');
+          file=$(printf '%s' "${file}" | tr '/' '_');
           job_name="${commit_sha}:${file}";
           source_file="${source_location}/${commit_sha}/${file}";
           output_file="${output_location}/${commit_sha}/${file}";
 
           output=$(gcloud ai custom-jobs create \
              --format=json \
-             "--region=${region}" \
-             "--display-name=${job_name}" \
-             "--labels=commit_sha=${commit_sha}" \
-             "--worker-pool-spec=machine-type=${machine_type},replica-count=1,container-image-uri=${container}" \
-             "--args=nbexecutor,--input-notebook=${source_file},--output-notebook=${output_file},--kernel-name=${kernel}");
+             --region="${region}" \
+             --display-name="${job_name}" \
+             --labels=commit_sha="${commit_sha}" \
+             --worker-pool-spec=machine-type="${machine_type}",replica-count="1",container-image-uri="${container}" \
+             --args=nbexecutor,--input-notebook="${source_file}",--output-notebook="${output_file}",--kernel-name="${kernel}");
 
-          echo "$output" | jq -c > training.json
-          jq '.jobs[.jobs | length] |= . + '$(cat training.json) jobs.json > jobs_new.json
+          printf '%s' "${output}" | jq -c > training.json
+          jq --slurpfile job training.json '.jobs[.jobs | length] |= . + $job[0]' jobs.json > jobs_new.json
           cat jobs_new.json | jq -c > jobs.json
 
         done;
-        raw="$(cat jobs.json)" || true
-        safe="$(printf '%s' "$raw" | tr -d '\n\r')"
-        echo "name=training_jobs=${safe}" >> "$GITHUB_OUTPUT"
+        raw_jobs="$(cat jobs.json)" || true
+        safe_jobs=$(printf '%s' "${raw_jobs}" | tr -d '\n\r')
+        echo "name=training_jobs=${safe_jobs}" >> "$GITHUB_OUTPUT"
+
     - name: 'add-comment'
       env:
         vertex_job_uri: 'https://console.cloud.google.com/vertex-ai/locations'
