@@ -75,17 +75,15 @@ runs:
         set -x;
 
         mkdir -p "${dir}";
-        files=()
-        if [ -n "${allowlist}" ]; then
-          read -r -d '' -a files <<< "${allowlist}" || true
-        fi
-        for file in "${files[@]}";
+        # shellcheck disable=SC2206
+        allowlist_files=($allowlist)   # same split and glob as upstream's unquoted ${allowlist}
+        for file in "${allowlist_files[@]}";
         do
-          f2=$(printf '%s' "${file}" | tr '/' '_');
-          cp -- "${file}" "${dir}/${f2}";
+          f2=$(printf '%s\n' "${file}"|tr '/' '_');
+          cp "${file}" "${dir}/${f2}";
         done;
-        raw_notebooks="$(ls -- "${dir}" | xargs)" || true
-        safe_notebooks=$(printf '%s' "${raw_notebooks}" | tr -d '\n\r')
+        raw_notebooks="$(ls "${dir}" | xargs)" || true
+        safe_notebooks=$(printf '%s' "$raw_notebooks" | tr -d '\n\r')
         echo "notebooks=${safe_notebooks}" >> "$GITHUB_OUTPUT"
 
     # Setup gcloud CLI
@@ -116,13 +114,11 @@ runs:
         set -x;
         echo '{"jobs": []}' > jobs.json
 
-        nb_files=()
-        if [ -n "${notebooks}" ]; then
-          read -r -d '' -a nb_files <<< "${notebooks}" || true
-        fi
-        for file in "${nb_files[@]}";
+        # shellcheck disable=SC2206
+        notebook_files=($notebooks)   # same split and glob as upstream's unquoted ${notebooks}
+        for file in "${notebook_files[@]}";
         do
-          file=$(printf '%s' "${file}" | tr '/' '_');
+          file=$(printf '%s\n' "${file}"|tr '/' '_');
           job_name="${commit_sha}:${file}";
           source_file="${source_location}/${commit_sha}/${file}";
           output_file="${output_location}/${commit_sha}/${file}";
@@ -135,13 +131,13 @@ runs:
              --worker-pool-spec=machine-type="${machine_type}",replica-count="1",container-image-uri="${container}" \
              --args=nbexecutor,--input-notebook="${source_file}",--output-notebook="${output_file}",--kernel-name="${kernel}");
 
-          printf '%s' "${output}" | jq -c > training.json
-          jq --slurpfile job training.json '.jobs[.jobs | length] |= . + $job[0]' jobs.json > jobs_new.json
-          cat jobs_new.json | jq -c > jobs.json
+          printf '%s\n' "$output" | jq -c > training.json
+          jq --argjson training "$(cat training.json)" '.jobs[.jobs | length] |= . + $training' jobs.json > jobs_new.json
+          jq -c < jobs_new.json > jobs.json
 
         done;
         raw_jobs="$(cat jobs.json)" || true
-        safe_jobs=$(printf '%s' "${raw_jobs}" | tr -d '\n\r')
+        safe_jobs=$(printf '%s' "$raw_jobs" | tr -d '\n\r')
         echo "name=training_jobs=${safe_jobs}" >> "$GITHUB_OUTPUT"
 
     - name: 'add-comment'
