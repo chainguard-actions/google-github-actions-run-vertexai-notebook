@@ -91,7 +91,7 @@ runs:
       uses: 'chainguard-actions/google-github-actions-setup-gcloud@d4f09522daa23b17b4a85c8fc4d6383c028f6bb4' # v2
 
     - name: 'upload-folder'
-      uses: 'chainguard-actions/google-github-actions-upload-cloud-storage@9de7090b5f9494d49dd2c517d31092034328d043' # v2
+      uses: 'chainguard-actions/google-github-actions-upload-cloud-storage@d4c08095ec661496e4e01fc6a0fa33ee9602457a' # v2
       with:
         path: './${{ github.sha }}'
         destination: '${{ inputs.gcs_source_bucket }}'
